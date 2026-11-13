@@ -18,6 +18,8 @@ uv run --no-project --with pytest --with huggingface_hub --with pyyaml pytest -q
 ./hfarchive --config examples/archive-2026-11.yaml --profile all --verify-only   # hits the Hub, no downloads
 ```
 
+CI (`.github/workflows/test.yml`) runs the tests and these smoke checks on Linux, macOS and Windows; it must pass on all three. Keep code portable: paths stored in the manifest or written into Markdown use `/` (`rel_posix`), text files go through `write_text` (UTF-8, LF), subprocess output is decoded as UTF-8, and Windows runs the script as `uv run --script hfarchive`.
+
 Always pass `--no-project` to `uv run`; without it uv finds a `pyproject.toml` in a parent directory and rebuilds that project's `.venv`. Never run a real download in a test or a check.
 
 ## When a user asks you to research models
@@ -107,15 +109,16 @@ Follow the schema in the README. Per entry:
 - `guide:` at the top level, pointing at the selection's `docs/models-YYYY-MM.md`; it is copied to the drive on every run.
 - `usage.workflows` for every image and video model: ComfyUI workflow JSONs, preferably from `Comfy-Org/workflow_templates`, at a pinned commit URL. Check each URL returns valid JSON.
 
-Pin every runtime in `runtimes:` to a release tag (or a commit when there are no releases) found with `gh api`, and check that `release_assets` globs match real assets. Include every custom-node pack the workflows need.
+Pin every runtime in `runtimes:` to a release tag (or a commit when there are no releases) found with `gh api`, and check that `release_assets` globs match real assets. Selections cover macOS arm64 (Apple Silicon) wherever the runtime supports it: its release build in `release_assets`, a `macosx_*_arm64` wheel platform, and notes where the macOS path differs. Include every custom-node pack the workflows need.
 
 Pin `wheels` for every Python runtime (ComfyUI and its node packs, vLLM, transformers), so it installs offline:
 - `python`: one quoted version every pinned runtime supports (read each `requires-python`).
 - `requirements`: the runtime's own requirements files at `ref`; read them in a clone at that ref.
 - `packages`: the PyTorch build the runtime recommends at `ref` (its README or install docs), pinned with the CUDA local version (`torch==X+cu130`), and `index_url` set to that CUDA index with PyPI as an extra index.
-- `platforms`: Linux x86_64 and Windows amd64 where the runtime runs on both. Pick the manylinux version from the wheels the set actually needs (some packages ship only `manylinux_2_31`).
+- `platforms`: Linux x86_64, Windows amd64 and macOS arm64 wherever the runtime runs on them. Pick the manylinux version from the wheels the set actually needs (some packages ship only `manylinux_2_31`), and the macOS version from the newest one they need (torch 2.14 ships only `macosx_14_0_arm64`).
+- CUDA builds of PyTorch exist only for Linux and Windows. In a set that also targets macOS, give each line an environment marker: `"torch==X+cu130; sys_platform != 'darwin'"` and `"torch==X; sys_platform == 'darwin'"` (PyPI's build, MPS).
 - `start`: how to start it from the unpacked source; node packs install into ComfyUI's environment.
-- Check that each set resolves without downloading wheels: `uv pip compile --python-version 3.12 --python-platform x86_64-manylinux_2_28 --only-binary :all: --index-strategy unsafe-best-match [--index-url …] <requirements.txt> <packages file>` (and `x86_64-pc-windows-msvc`). Explain in `notes` anything that cannot be made offline-installable.
+- Check that each set resolves without downloading wheels: `uv pip compile --python-version 3.12 --python-platform x86_64-manylinux_2_28 --only-binary :all: --index-strategy unsafe-best-match [--index-url …] <requirements.txt> <packages file>` (and `x86_64-pc-windows-msvc`; for macOS, `MACOSX_DEPLOYMENT_TARGET=14.0 … --python-platform aarch64-apple-darwin`, as uv otherwise targets an older macOS). Explain in `notes` anything that cannot be made offline-installable.
 
 ### 6. Check and size it
 

@@ -69,7 +69,7 @@ def _isolated_logs(tmp_path, monkeypatch):
 
 
 def write_config(path: Path, body: str) -> Path:
-    path.write_text(body)
+    path.write_text(body, encoding="utf-8", newline="\n")  # same bytes on Windows
     return path
 
 
@@ -313,7 +313,7 @@ def test_init_copies_the_curated_selection_from_a_clone(tmp_path, monkeypatch):
     monkeypatch.setattr(hfa, "fetch_text", lambda url: pytest.fail("must not fetch"))
     target = tmp_path / "models.yaml"
     assert hfa.main(["--init", "--config", str(target)]) == 0
-    assert target.read_text() == CURATED.read_text()
+    assert target.read_bytes() == CURATED.read_bytes()
     assert hfa.load_catalog(target).models
 
 
@@ -324,7 +324,7 @@ def test_init_fetches_the_curated_selection_when_standalone(tmp_path, monkeypatc
         tried.append(url)
         if f"/v{hfa.__version__}/" in url:
             raise hfa.urllib.error.URLError("404: no such tag yet")
-        return CURATED.read_text()
+        return CURATED.read_text(encoding="utf-8")  # the file holds non-ASCII
 
     monkeypatch.setattr(hfa, "curated_in_clone", lambda: None)
     monkeypatch.setattr(hfa, "fetch_text", fake_fetch)
@@ -332,7 +332,7 @@ def test_init_fetches_the_curated_selection_when_standalone(tmp_path, monkeypatc
     assert hfa.main(["--init", "--config", str(target)]) == 0
     assert tried == [hfa.CURATED_URL.format(ref=f"v{hfa.__version__}"),
                      hfa.CURATED_URL.format(ref="main")]
-    assert target.read_text() == CURATED.read_text()
+    assert target.read_bytes() == CURATED.read_bytes()
 
     def offline(url):
         raise hfa.urllib.error.URLError("offline")
@@ -377,7 +377,7 @@ def test_build_command():
     cat = hfa.load_catalog(EXAMPLE)
     cmd = hfa.build_command(cat.by_id("gpt-oss-120b"), Path("/mnt/d"), "hf", 4)
     assert cmd[:3] == ["hf", "download", "openai/gpt-oss-120b"]
-    assert "--local-dir" in cmd and "/mnt/d/text-llm/openai/gpt-oss-120b" in cmd
+    assert "--local-dir" in cmd and str(Path("/mnt/d/text-llm/openai/gpt-oss-120b")) in cmd
     assert cmd.count("--exclude") == 2
     assert "--max-workers" in cmd
 
@@ -386,14 +386,14 @@ def test_hf_bin_prefers_the_script_environment(tmp_path, monkeypatch):
     env_bin = tmp_path / "bin"
     env_bin.mkdir()
     (env_bin / "python").touch()
-    (env_bin / "hf").touch()
+    (env_bin / hfa.HF_EXE).touch()  # hf.exe in a Windows venv's Scripts
     other = tmp_path / "other-hf"
     other.touch()
     monkeypatch.setattr(hfa.sys, "executable", str(env_bin / "python"))
     monkeypatch.setenv(hfa.HF_BIN_ENV, str(other))
-    assert hfa.resolve_hf_bin() == str(env_bin / "hf")
+    assert hfa.resolve_hf_bin() == str(env_bin / hfa.HF_EXE)
 
-    (env_bin / "hf").unlink()
+    (env_bin / hfa.HF_EXE).unlink()
     assert hfa.resolve_hf_bin() == str(other)
 
     monkeypatch.setenv(hfa.HF_BIN_ENV, str(tmp_path / "missing"))
@@ -1314,7 +1314,7 @@ def test_guide_is_copied_from_the_config_directory_first(tmp_path, monkeypatch):
 
     # next to the config: that one wins
     (tmp_path / "docs").mkdir()
-    (tmp_path / "docs" / "guide.md").write_text("mine\n")
+    (tmp_path / "docs" / "guide.md").write_bytes(b"mine\n")
     rec = hfa.archive_guide(cat, dest)
     assert rec["source"] == str(tmp_path / "docs" / "guide.md")
     assert (dest / "guide.md").read_text() == "mine\n"
@@ -1550,11 +1550,13 @@ def test_requirement_specs_follow_includes(tmp_path):
 AVAILABLE = {"click": "8.1.7", "colorama": "0.4.6", "numpy": "2.5.4"}
 
 
-def fake_run_tool(calls, fail_download=(), abort_batch=False):
+def fake_run_tool(calls, fail_download=(), abort_batch=False, envs=None):
     """uv pip compile and pip download against AVAILABLE; Windows adds colorama,
     as click's `platform_system == "Windows"` marker does."""
-    def run(cmd):
+    def run(cmd, env=None):
         calls.append(cmd)
+        if envs is not None:
+            envs.append(env)
         if cmd[1:3] == ["pip", "compile"]:
             out = Path(cmd[cmd.index("-o") + 1])
             specs = [s for f in cmd[cmd.index("-o") + 2:] for s in hfa.requirement_specs(Path(f))]
@@ -1611,7 +1613,7 @@ def test_wheels_layout_lock_install_md_and_check(tmp_path, wheels_env):
 
     # the requirements were read from the archived source at the pinned commit
     compile_inputs = calls[0][calls[0].index("-o") + 2:]
-    assert compile_inputs[0].endswith("app-v1/requirements.txt")
+    assert Path(compile_inputs[0]).as_posix().endswith("app-v1/requirements.txt")
 
     lock = (linux / "requirements.lock.txt").read_text()
     sha = hashlib.sha256(b"click 8.1.7").hexdigest()
@@ -1773,7 +1775,8 @@ def test_curated_python_runtimes_pin_wheels():
                                 "transformers"}
     assert {w.python for w in with_wheels.values()} == {"3.12"}
     comfy = with_wheels["ComfyUI"]
-    assert comfy.platforms == ["manylinux_2_28_x86_64", "win_amd64"]
+    assert comfy.platforms == ["manylinux_2_28_x86_64", "win_amd64",
+                               "macosx_14_0_arm64"]
     assert comfy.requirements == ["requirements.txt"]
     assert any(p.startswith("torch==") and "+cu" in p for p in comfy.packages)
     assert comfy.index_url.startswith("https://download.pytorch.org/whl/cu")
@@ -1845,3 +1848,92 @@ def test_one_unavailable_pin_does_not_empty_the_wheelhouse(tmp_path, wheels_env,
     assert plat["status"] == "partial" and plat["missing"] == ["numpy"]
     names = {a["path"].rsplit("/", 1)[-1] for a in plat["artifacts"]}
     assert "click-8.1.7-py3-none-any.whl" in names
+
+
+# --------------------------------------------------------- cross-platform
+def test_manifest_paths_use_forward_slashes_on_windows_too():
+    import ntpath
+    import posixpath
+
+    assert hfa.rel_posix(r"D:\drive\llm\org\a\USAGE.md", "D:\\drive", ntpath) == (
+        "llm/org/a/USAGE.md")
+    assert hfa.rel_posix(r"D:\drive\_runtimes\x", r"D:\drive\llm\org\a", ntpath) == (
+        "../../../_runtimes/x")
+    assert hfa.rel_posix("/d/llm/org/a", "/d", posixpath) == "llm/org/a"
+
+
+def test_manifest_timestamp_has_a_numeric_utc_offset(tmp_path):
+    hfa.manifest_write(tmp_path, [{"kind": "x"}])
+    [rec] = hfa.manifest_read(tmp_path)
+    assert re.fullmatch(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d[+-]\d{4}", rec["timestamp"])
+    assert b"\r\n" not in (tmp_path / "_hfarchive" / "manifest.jsonl").read_bytes()
+
+
+def test_refresh_sizes_keeps_crlf_line_endings(tmp_path):
+    path = tmp_path / "crlf.yaml"
+    path.write_bytes(MINIMAL.replace("    tags: [x]\n", "    tags: [x]\n    approx_bytes: 1\n")
+                     .replace("\n", "\r\n").encode())
+    assert hfa.write_approx_bytes(path, {"a": 42}) == 1
+    data = path.read_bytes()
+    assert b"approx_bytes: 42\r\n" in data and data.count(b"\n") == data.count(b"\r\n")
+
+
+def test_utf8_stdio_replaces_a_legacy_code_page():
+    import io
+
+    out, err = (io.TextIOWrapper(io.BytesIO(), encoding="cp1252") for _ in range(2))
+    saved = sys.stdout, sys.stderr
+    sys.stdout, sys.stderr = out, err
+    try:
+        hfa.utf8_stdio()
+        print("τ²-bench ≈ 1")
+        sys.stdout.flush()
+    finally:
+        sys.stdout, sys.stderr = saved
+    assert out.encoding == err.encoding == "utf-8"
+    assert out.buffer.getvalue() == "τ²-bench ≈ 1\n".encode()
+
+
+def test_long_path_warning_only_on_windows_without_long_paths(monkeypatch):
+    long_path = Path("D:/") / ("x" * 120) / ("y" * 140)
+    short = Path("D:/llm/org/model.gguf")
+    monkeypatch.setattr(hfa, "windows_long_paths_enabled", lambda: False)
+    assert hfa.long_path_warning([long_path], windows=False) is None
+    assert hfa.long_path_warning([short], windows=True) is None
+    assert hfa.long_path_warning([], windows=True) is None
+    hint = hfa.long_path_warning([short, long_path], windows=True)
+    assert hint and "LongPathsEnabled" in hint and str(len(str(long_path))) in hint
+    monkeypatch.setattr(hfa, "windows_long_paths_enabled", lambda: True)
+    assert hfa.long_path_warning([long_path], windows=True) is None
+
+
+def test_macos_wheels_resolve_for_the_tagged_macos_release(tmp_path, wheels_env, monkeypatch):
+    dest, calls = wheels_env
+    envs: list = []
+    monkeypatch.setattr(hfa, "run_tool", fake_run_tool(calls, envs=envs))
+    assert hfa.resolve_env("manylinux_2_28_x86_64") is None
+    assert hfa.resolve_env("macosx_14_0_arm64")["MACOSX_DEPLOYMENT_TARGET"] == "14.0"
+    up = make_python_upstream(tmp_path, "click\n")
+    rt = python_runtime(up, platforms=["manylinux_2_28_x86_64", "macosx_14_0_arm64"])
+    res = hfa.archive_runtime(hfa.probe_runtime(rt, dest, {}), dest)
+    assert res.wheels["status"] == "complete", res.message
+    by_platform = {c[c.index("--python-platform") + 1]: e
+                   for c, e in zip(calls, envs, strict=True) if "compile" in c}
+    assert by_platform["x86_64-manylinux_2_28"] is None
+    assert by_platform["aarch64-apple-darwin"]["MACOSX_DEPLOYMENT_TARGET"] == "14.0"
+    install = (dest / res.wheels["install"]["path"]).read_bytes()
+    assert b"## macosx_14_0_arm64" in install and b"app-v1/.venv/bin/python" in install
+    assert b"\r\n" not in install, "files on the drive are LF on every OS"
+
+
+def test_curated_selection_covers_macos_arm64():
+    cat = hfa.load_catalog(CURATED)
+    assert "llama-b12359-bin-macos-arm64.tar.gz" in cat.runtime_by_id("llama.cpp").release_assets
+    assert any("Darwin-macOS" in a and a.endswith("-arm64.zip")
+               for a in cat.runtime_by_id("stable-diffusion.cpp").release_assets)
+    for rid in ("ComfyUI", "ComfyUI-GGUF", "ComfyUI-GGUF-molbal"):
+        assert "macosx_14_0_arm64" in cat.runtime_by_id(rid).wheels.platforms, rid
+    packages = cat.runtime_by_id("ComfyUI").wheels.packages
+    # CUDA torch everywhere but macOS, where the cu130 index has no wheels
+    assert "torch==2.14.1+cu130; sys_platform != 'darwin'" in packages
+    assert "torch==2.14.1; sys_platform == 'darwin'" in packages

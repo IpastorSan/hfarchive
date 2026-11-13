@@ -48,7 +48,7 @@ from huggingface_hub.utils import (
     filter_repo_objects,
 )
 
-__version__ = "1.2.0"
+__version__ = "1.2.1"
 
 DEFAULT_CONFIG = "models.yaml"
 # The curated selection `--init` writes and a clone falls back to.
@@ -58,6 +58,7 @@ REPO_RAW_URL = "https://raw.githubusercontent.com/IpastorSan/hfarchive/{ref}/{pa
 CURATED_URL = REPO_RAW_URL.replace("{path}", "examples/" + CURATED_CONFIG)
 DEST_ENV = "HFARCHIVE_DEST"
 HF_BIN_ENV = "HFARCHIVE_HF_BIN"
+HF_EXE = "hf.exe" if os.name == "nt" else "hf"
 BOOKKEEPING_DIR = "_hfarchive"
 MANIFEST_NAME = "manifest.jsonl"
 CONFIGS_DIR = "configs"
@@ -77,6 +78,23 @@ DEFAULTS = {
 }
 
 log = logging.getLogger("hfarchive")
+
+
+def write_text(path: Path, text: str) -> None:
+    """UTF-8 with LF line endings on every OS, so a drive written on Windows
+    holds the same bytes as one written on Linux or macOS."""
+    path.write_text(text, encoding="utf-8", newline="\n")
+
+
+# Child processes print UTF-8 (uv, git, hf); the locale's code page on Windows
+# cannot decode all of it.
+TEXT_OUTPUT = {"text": True, "encoding": "utf-8", "errors": "replace"}
+
+
+def rel_posix(path: str | Path, start: str | Path, pathmod=os.path) -> str:
+    """`path` relative to `start` with `/` separators, as the manifest and the
+    Markdown links store it; `Path(start) / rel` reads it back on any OS."""
+    return pathmod.relpath(path, start).replace(pathmod.sep, "/")
 
 
 # =================================================================== config
@@ -452,7 +470,7 @@ def load_catalog(path: str | Path) -> Catalog:
     if not path.is_file():
         raise CatalogError(f"config not found: {path} (create one with --init)")
     try:
-        raw = yaml.safe_load(path.read_text()) or {}
+        raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
     except yaml.YAMLError as exc:
         raise CatalogError(f"{path} is not valid YAML: {exc}") from exc
     if not isinstance(raw, dict):
@@ -523,7 +541,8 @@ def write_approx_bytes(path: str | Path, sizes: dict[str, int]) -> int:
     Returns the number of entries updated.
     """
     path = Path(path)
-    lines = path.read_text().splitlines(keepends=True)
+    # Bytes in, bytes out: keeps the file's own line endings on every OS.
+    lines = path.read_bytes().decode("utf-8").splitlines(keepends=True)
     current: str | None = None
     updated = 0
     for i, line in enumerate(lines):
@@ -533,11 +552,12 @@ def write_approx_bytes(path: str | Path, sizes: dict[str, int]) -> int:
             continue
         s = _SIZE_LINE.match(line)
         if s and current in sizes:
-            new = f"{s.group(1)}approx_bytes: {sizes[current]}\n"
+            ending = line[len(line.rstrip("\r\n")):]
+            new = f"{s.group(1)}approx_bytes: {sizes[current]}{ending}"
             if new != line:
                 updated += 1
             lines[i] = new
-    path.write_text("".join(lines))
+    path.write_bytes("".join(lines).encode("utf-8"))
     return updated
 
 
@@ -686,7 +706,7 @@ def curated_text() -> str:
     """The curated selection: from the clone, else from this version's tag, else main."""
     local = curated_in_clone()
     if local:
-        return local.read_text()
+        return local.read_text(encoding="utf-8")
     errors = []
     for url in repo_raw_urls("examples/" + CURATED_CONFIG):
         try:
@@ -707,7 +727,7 @@ def write_starter_config(path: Path, minimal: bool = False) -> int:
         print(f"error: {exc}", file=sys.stderr)
         return 2
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(text)
+    write_text(path, text)
     what = "the minimal starter" if minimal else f"the curated selection ({CURATED_CONFIG})"
     print(f"wrote {what} to {path}; edit it, then run: hfarchive --config {path} --list")
     return 0
@@ -871,7 +891,7 @@ def resolve_hf_bin() -> str | None:
     The sibling of sys.executable comes first so the CLI matches the
     huggingface_hub version used to resolve metadata.
     """
-    sibling = Path(sys.executable).parent / "hf"
+    sibling = Path(sys.executable).parent / HF_EXE
     if sibling.exists():
         return str(sibling)
     explicit = os.environ.get(HF_BIN_ENV)
@@ -920,7 +940,7 @@ def build_card_command(model: Model, dest: Path, hf_bin: str, names: list[str],
 
 def _run_hf(cmd: list[str]) -> tuple[int, str]:
     """Run `hf download` quietly; return (exit code, its last output lines)."""
-    proc = subprocess.run(cmd, capture_output=True, text=True)
+    proc = subprocess.run(cmd, capture_output=True, **TEXT_OUTPUT)
     tail = (proc.stderr or proc.stdout or "").strip().splitlines()[-5:]
     return proc.returncode, " | ".join(tail) or f"hf download exited {proc.returncode}"
 
@@ -1035,8 +1055,10 @@ def manifest_write(dest: Path, records: list[dict]) -> Path:
     d = bookkeeping_dir(dest)
     d.mkdir(parents=True, exist_ok=True)
     path = d / MANIFEST_NAME
-    stamp = {"timestamp": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "host": platform.node()}
-    with path.open("a", encoding="utf-8") as fh:
+    # datetime formats %z itself; time.strftime's %z depends on the C library.
+    now = datetime.datetime.now().astimezone()
+    stamp = {"timestamp": now.strftime("%Y-%m-%dT%H:%M:%S%z"), "host": platform.node()}
+    with path.open("a", encoding="utf-8", newline="\n") as fh:
         for record in records:
             fh.write(json.dumps({**stamp, **record}, ensure_ascii=False) + "\n")
     return path
@@ -1063,7 +1085,7 @@ def manifest_append(dest: Path, results: list[DownloadResult],
             "category": m.category,
             "status": res.status,
             "dest": str(m.dest_dir(dest)),
-            "rel_dest": os.path.relpath(m.dest_dir(dest), dest),
+            "rel_dest": rel_posix(m.dest_dir(dest), dest),
             "files": st.matched_files if st else None,
             "bytes_matched": st.matched_bytes if st else None,
             "bytes_transferred_estimate": res.bytes_expected,
@@ -1135,7 +1157,7 @@ def hash_file(path: Path, algo: str, label: str | None = None) -> str:
 
 
 def artifact_record(path: Path, dest: Path, **extra) -> dict:
-    return {"path": os.path.relpath(path, dest), "size": path.stat().st_size,
+    return {"path": rel_posix(path, dest), "size": path.stat().st_size,
             "sha256": hash_file(path, "sha256", path.name), **extra}
 
 
@@ -1207,6 +1229,8 @@ def cmd_check(dest: Path, fast: bool, as_json: bool) -> int:
         log.error("no manifest at %s; nothing to check", bookkeeping_dir(dest) / MANIFEST_NAME)
         return 2
     items, unverifiable = check_items(dest, records)
+    if hint := long_path_warning([i.path.absolute() for i in items]):
+        log.warning("%s", hint)
     mode = "sizes only" if fast else "sizes and hashes"
     total = sum(i.size or 0 for i in items)
     log.info("checking %d files (%s, %s) under %s...", len(items), human(total), mode, dest)
@@ -1327,7 +1351,7 @@ def archive_config(config: Path, dest: Path) -> dict:
     artifacts = []
     for target, kind in ((stamped, "copy"), (d / CONFIG_LATEST, "latest")):
         size, sha = copy_file(config, target)
-        artifacts.append({"path": os.path.relpath(target, dest), "size": size,
+        artifacts.append({"path": rel_posix(target, dest), "size": size,
                           "sha256": sha, "kind": kind})
     return {"kind": "config", "id": "config", "status": "downloaded",
             "source": str(config.resolve()), "artifacts": artifacts}
@@ -1385,7 +1409,7 @@ def github_token() -> str | None:
     if not token and shutil.which("gh"):
         try:
             proc = subprocess.run(["gh", "auth", "token"], capture_output=True,
-                                  text=True, timeout=15)
+                                  timeout=15, **TEXT_OUTPUT)
             token = proc.stdout.strip() if proc.returncode == 0 else None
         except (OSError, subprocess.SubprocessError):
             token = None
@@ -1439,9 +1463,13 @@ class GitError(Exception):
 
 
 def git(*args: str) -> str:
-    """Run git; return stdout. Raises GitError with git's own message."""
+    """Run git; return stdout. Raises GitError with git's own message.
+
+    core.autocrlf is off so `git archive` writes the same bytes on Windows,
+    where Git for Windows turns it on by default."""
     try:
-        proc = subprocess.run(["git", *args], capture_output=True, text=True)
+        proc = subprocess.run(["git", "-c", "core.autocrlf=false", *args],
+                              capture_output=True, **TEXT_OUTPUT)
     except FileNotFoundError as exc:
         raise GitError("git is not installed") from exc
     if proc.returncode != 0:
@@ -1621,7 +1649,7 @@ def archive_source(st: RuntimeStatus, dest: Path) -> RuntimeResult:
             log.info("%s: fetching release asset %s (%s)", rt.id, asset["name"],
                      human(asset.get("size") or 0))
             size, sha = fetch_url(asset["url"], path, asset.get("size"), asset.get("sha256"))
-            artifacts.append({"path": os.path.relpath(path, dest), "size": size,
+            artifacts.append({"path": rel_posix(path, dest), "size": size,
                               "sha256": sha, "kind": "release-asset", "url": asset["url"]})
     except (GitError, GitHubError, OSError, urllib.error.URLError) as exc:
         return RuntimeResult(rt, "failed", st.commit, artifacts, message=str(exc))
@@ -1632,7 +1660,7 @@ def runtime_records(results: list[RuntimeResult], dest: Path) -> list[dict]:
     return [{
         "kind": "runtime", "id": r.runtime.id, "git": r.runtime.git, "ref": r.runtime.ref,
         "commit": r.commit, "status": r.status,
-        "rel_dest": os.path.relpath(r.runtime.dest_dir(dest), dest),
+        "rel_dest": rel_posix(r.runtime.dest_dir(dest), dest),
         "artifacts": r.artifacts, "tags": r.runtime.tags, "notes": r.runtime.notes,
         "message": r.message or None,
         **({"wheels": r.wheels} if r.wheels else {}),
@@ -1760,10 +1788,18 @@ def wheel_tools() -> tuple[str | None, list[str] | None, str | None]:
     return uv, [uv, "run", "--no-project", "--with", "pip", "python", "-m", "pip"], None
 
 
-def run_tool(cmd: list[str]) -> tuple[int, str]:
+def resolve_env(platform_tag: str) -> dict[str, str] | None:
+    """uv resolves a macOS target for an old default release unless
+    MACOSX_DEPLOYMENT_TARGET names one; take it from the tag, so a
+    macosx_14_0_arm64 set can pin wheels built for macOS 14 (torch is)."""
+    m = re.fullmatch(r"macosx_(\d+)_(\d+)_\w+", platform_tag)
+    return {**os.environ, "MACOSX_DEPLOYMENT_TARGET": f"{m[1]}.{m[2]}"} if m else None
+
+
+def run_tool(cmd: list[str], env: dict[str, str] | None = None) -> tuple[int, str]:
     log.debug("running: %s", " ".join(cmd))
     try:
-        proc = subprocess.run(cmd, capture_output=True, text=True)
+        proc = subprocess.run(cmd, capture_output=True, env=env, **TEXT_OUTPUT)
     except OSError as exc:
         return 127, str(exc)
     return proc.returncode, (proc.stdout or "") + (proc.stderr or "")
@@ -1803,7 +1839,7 @@ def wheel_inputs(rt: Runtime, w: Wheels, source: Path,
             specs += requirement_specs(path)
     if w.packages:
         packages = tmp / "packages.txt"
-        packages.write_text("\n".join(w.packages) + "\n", encoding="utf-8")
+        write_text(packages, "\n".join(w.packages) + "\n")
         inputs.append(packages)
         specs += w.packages
     return inputs, list(dict.fromkeys(specs))
@@ -1815,16 +1851,17 @@ def resolve_wheels(uv: str, w: Wheels, platform_tag: str, inputs: list[Path],
     lines, error). When the set does not resolve, find the lines that do not
     resolve on their own and resolve the rest without them."""
     resolved = tmp / f"resolved-{platform_tag}.txt"
-    rc, out = run_tool(build_resolve_command(uv, w, platform_tag, inputs, resolved))
+    env = resolve_env(platform_tag)
+    rc, out = run_tool(build_resolve_command(uv, w, platform_tag, inputs, resolved), env)
     if rc == 0:
         return resolved, [], None
 
     def alone(item: tuple[int, str]) -> dict | None:
         i, spec = item
         one = tmp / f"one-{platform_tag}-{i}.txt"
-        one.write_text(spec + "\n", encoding="utf-8")
+        write_text(one, spec + "\n")
         rc1, out1 = run_tool(build_resolve_command(uv, w, platform_tag, [one],
-                                                   one.with_suffix(".resolved")))
+                                                   one.with_suffix(".resolved")), env)
         return None if rc1 == 0 else {"requirement": spec, "error": tool_error(out1)}
 
     with cf.ThreadPoolExecutor(max_workers=8) as ex:
@@ -1834,8 +1871,8 @@ def resolve_wheels(uv: str, w: Wheels, platform_tag: str, inputs: list[Path],
     if not unavailable or not rest:
         return None, unavailable, tool_error(out)
     rest_file = tmp / f"rest-{platform_tag}.txt"
-    rest_file.write_text("\n".join(rest) + "\n", encoding="utf-8")
-    rc, out = run_tool(build_resolve_command(uv, w, platform_tag, [rest_file], resolved))
+    write_text(rest_file, "\n".join(rest) + "\n")
+    rc, out = run_tool(build_resolve_command(uv, w, platform_tag, [rest_file], resolved), env)
     if rc != 0:
         return None, unavailable, tool_error(out)
     return resolved, unavailable, None
@@ -1863,7 +1900,7 @@ def download_wheelhouse(rt: Runtime, w: Wheels, platform_tag: str, inputs: list[
         def one(item: tuple[str, str]) -> tuple[int, str]:
             name, version = item
             single = tmp / f"pin-{platform_tag}-{name}.txt"
-            single.write_text(f"{name}=={version}\n", encoding="utf-8")
+            write_text(single, f"{name}=={version}\n")
             return run_tool(build_download_command(pip, w, platform_tag, single, wheelhouse))
 
         todo = [(n, v) for n, v in pins.items() if n not in have]
@@ -1882,7 +1919,7 @@ def download_wheelhouse(rt: Runtime, w: Wheels, platform_tag: str, inputs: list[
     missing = sorted(set(pins) - set(files))
     artifacts, lock_lines = [], []
     for name in sorted(files):
-        rel = os.path.relpath(files[name], dest)
+        rel = rel_posix(files[name], dest)
         prev = known.get(rel)
         art = (prev if prev and prev.get("size") == files[name].stat().st_size
                else artifact_record(files[name], dest, kind="wheel"))
@@ -1895,7 +1932,7 @@ def download_wheelhouse(rt: Runtime, w: Wheels, platform_tag: str, inputs: list[
     header += [f"# not available as a wheel: {u['requirement']}" for u in unavailable]
     header += [f"# resolved but not downloaded: {name}=={pins[name]}" for name in missing]
     with atomic_target(lock) as part:
-        part.write_text("\n".join(header + lock_lines) + "\n", encoding="utf-8")
+        write_text(part, "\n".join(header + lock_lines) + "\n")
     artifacts.append(artifact_record(lock, dest, kind="wheel-lock"))
 
     problems = []
@@ -1976,7 +2013,7 @@ def archive_wheels(rt: Runtime, w: Wheels, dest: Path, commit: str | None, sourc
     install = rt.wheels_dir(dest) / WHEELS_INSTALL_NAME
     install.parent.mkdir(parents=True, exist_ok=True)
     with atomic_target(install) as part:
-        part.write_text(install_markdown(rt, w, commit, summary), encoding="utf-8")
+        write_text(part, install_markdown(rt, w, commit, summary))
     summary["install"] = artifact_record(install, dest, kind="wheel-install")
     return summary
 
@@ -2071,7 +2108,7 @@ def usage_markdown(entries: list[Model], model_dir: Path, dest: Path, cat: Catal
             lines.append("- Files: " + ", ".join(f"`{p}`" for p in m.include))
         if u.runtime:
             rt = cat.runtime_by_id(u.runtime)
-            where = (f", archived under `{os.path.relpath(rt.dest_dir(dest), model_dir)}/` "
+            where = (f", archived under `{rel_posix(rt.dest_dir(dest), model_dir)}/` "
                      f"(ref `{rt.ref}`)" if rt else "")
             lines.append(f"- Runtime: {u.runtime}{where}")
         if m.license:
@@ -2114,7 +2151,7 @@ def write_usage_files(models: list[Model], dest: Path, cat: Catalog,
         workflows = []
         for wf in (m.usage.workflows if m.usage else []):
             path = model_dir / WORKFLOWS_DIR / wf.name
-            entry = {"name": wf.name, "url": wf.url, "path": os.path.relpath(path, dest)}
+            entry = {"name": wf.name, "url": wf.url, "path": rel_posix(path, dest)}
             try:
                 entry["size"], entry["sha256"] = fetch_url(wf.url, path)
             except (urllib.error.URLError, OSError) as exc:
@@ -2123,9 +2160,8 @@ def write_usage_files(models: list[Model], dest: Path, cat: Catalog,
             workflows.append(entry)
         sharing = [x for x in cat.models if has_usage_md(x) and x.dest_dir(dest) == model_dir]
         usage = model_dir / USAGE_NAME
-        usage.write_text(usage_markdown(sharing or [m], model_dir, dest, cat, commits),
-                         encoding="utf-8")
-        extras[m.id] = {"usage": os.path.relpath(usage, dest), "workflows": workflows}
+        write_text(usage, usage_markdown(sharing or [m], model_dir, dest, cat, commits))
+        extras[m.id] = {"usage": rel_posix(usage, dest), "workflows": workflows}
     return extras
 
 
@@ -2228,7 +2264,7 @@ def index_markdown(records: list[dict]) -> str:
 def write_index(dest: Path) -> Path:
     path = Path(dest) / INDEX_NAME
     with atomic_target(path) as part:
-        part.write_text(index_markdown(manifest_read(dest)), encoding="utf-8")
+        write_text(part, index_markdown(manifest_read(dest)))
     return path
 
 
@@ -2546,6 +2582,32 @@ def on_home_filesystem(path: Path) -> bool:
         return False
 
 
+# Windows refuses paths of MAX_PATH (260) characters or more unless long paths
+# are enabled. `hf download` copes on its own; this script's checks do not.
+WINDOWS_MAX_PATH = 260
+LONG_PATHS_KEY = r"SYSTEM\CurrentControlSet\Control\FileSystem"
+
+
+def windows_long_paths_enabled() -> bool:
+    try:
+        import winreg
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, LONG_PATHS_KEY) as key:
+            return winreg.QueryValueEx(key, "LongPathsEnabled")[0] == 1
+    except (ImportError, OSError):
+        return False
+
+
+def long_path_warning(paths: list[Path], windows: bool = os.name == "nt") -> str | None:
+    """A hint when some path is too long for Windows without long paths."""
+    longest = max((str(p) for p in paths), key=len, default="")
+    if not windows or len(longest) < WINDOWS_MAX_PATH or windows_long_paths_enabled():
+        return None
+    return (f"a path of {len(longest)} characters ({longest}) is over Windows' limit of "
+            f"{WINDOWS_MAX_PATH - 1}; enable long paths, from an administrator PowerShell: "
+            f"New-ItemProperty -Path \"HKLM:\\{LONG_PATHS_KEY}\" -Name LongPathsEnabled "
+            "-Value 1 -PropertyType DWORD -Force")
+
+
 def resolve_dest(args) -> tuple[Path | None, list[str], bool]:
     """Return (dest, problems, fatal).
 
@@ -2689,6 +2751,10 @@ def cmd_plan(cat: Catalog, models: list[Model], runtimes: list[Runtime], args,
     print(flush=True)  # stdout is buffered; keep the table ahead of the log lines when both are redirected
     log.info("catalogued %s across %d repos; %s still to fetch",
              human(total_matched), len(rows), human(total_missing))
+    root = Path(dest).absolute() if dest is not None else None
+    if root and (hint := long_path_warning([s.model.dest_dir(root) / rel
+                                            for s in statuses for rel, _ in s.files])):
+        log.warning("%s", hint)
     if gated_skips:
         log.warning("%d gated repo(s) will be skipped (no HF token): %s",
                     len(gated_skips), ", ".join(r["model"].id for r in gated_skips))
@@ -2917,5 +2983,15 @@ def main(argv: list[str] | None = None) -> int:
     return rc
 
 
+def utf8_stdio() -> None:
+    """Print UTF-8 even where stdout is a pipe in the locale's code page, as on
+    Windows (cp1252), which cannot encode every model name or note."""
+    for stream in (sys.stdout, sys.stderr):
+        encoding = (getattr(stream, "encoding", None) or "").lower().replace("-", "")
+        if encoding != "utf8" and hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8")
+
+
 if __name__ == "__main__":
+    utf8_stdio()
     raise SystemExit(main())

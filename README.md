@@ -1,5 +1,7 @@
 # hfarchive
 
+[![tests](https://github.com/IpastorSan/hfarchive/actions/workflows/test.yml/badge.svg)](https://github.com/IpastorSan/hfarchive/actions/workflows/test.yml)
+
 `hfarchive` copies open-weight models from Hugging Face onto a drive you own,
 together with what you need to run them later, and checks that copy for
 damage.
@@ -61,10 +63,18 @@ chmod +x hfarchive
 ./hfarchive --help
 ```
 
+On Windows, in PowerShell:
+
+```powershell
+Invoke-WebRequest https://raw.githubusercontent.com/IpastorSan/hfarchive/main/hfarchive -OutFile hfarchive
+uv run --script hfarchive --help
+```
+
 It is a single Python file. [uv](https://docs.astral.sh/uv/) installs its two
-dependencies (`huggingface_hub`, `PyYAML`) on first run. It needs Linux or
-macOS, `git` if you archive runtimes, and `uv` if a runtime has `wheels`. Put
-the file anywhere on your `PATH` to call it as `hfarchive`.
+dependencies (`huggingface_hub`, `PyYAML`) on first run. It runs on Linux,
+macOS and Windows (see [Platform support](#platform-support)), and needs `git`
+if you archive runtimes and `uv` if a runtime has `wheels`. Put the file
+anywhere on your `PATH` to call it as `hfarchive`.
 
 Without uv, install the dependencies yourself and run it with Python 3.11+:
 `pip install huggingface_hub pyyaml && python3 hfarchive --help`.
@@ -93,6 +103,44 @@ export HFARCHIVE_DEST=/mnt/backup
 
 `Ctrl-C` is safe. Re-running skips files that are already complete and resumes
 partial ones, so a long archive can run over several sessions.
+
+## Platform support
+
+The script runs on Linux, macOS and Windows; CI runs the tests on all three.
+
+On Windows:
+
+- Run it as `uv run --script hfarchive ...`; Windows does not read the
+  script's first line.
+- Install [Git for Windows](https://git-scm.com/download/win) to archive
+  runtimes.
+- Windows refuses paths of 260 characters or more unless long paths are
+  enabled, and some model folders have long file names. `hfarchive` warns
+  before a run when a path is that long. To enable long paths, run this in an
+  administrator PowerShell, then open a new terminal:
+
+  ```powershell
+  New-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem" -Name LongPathsEnabled -Value 1 -PropertyType DWORD -Force
+  ```
+
+A drive written on one OS reads on the others: the manifest stores paths with
+`/`, and the files `hfarchive` writes use LF line endings.
+
+What the curated selection archives for each runtime, per OS. "Wheels" means
+an offline Python install; "source" means the git bundle and source tarball,
+which every runtime gets.
+
+| Runtime | Linux x86_64 | Windows x64 | macOS arm64 (Apple Silicon) |
+|---|---|---|---|
+| llama.cpp | CUDA build | CUDA build | Metal build |
+| ComfyUI + GGUF nodes | wheels (CUDA PyTorch) | portable 7z and wheels (CUDA PyTorch) | wheels (PyPI PyTorch, MPS); fp8 weights load at 16 bits |
+| stable-diffusion.cpp | CPU and Vulkan builds | CUDA build | build without Metal; rebuild from source with `-DSD_METAL=ON` |
+| Edge0 | source only; build it | Edge0 Chat app | source only; builds for Metal, runs the 35B model only |
+| vLLM | wheels (CUDA) | not supported by vLLM (use WSL) | source only (vLLM builds for CPU there) |
+| transformers | wheels (CUDA PyTorch) | source only | source only |
+
+The hardware tiers assume an NVIDIA GPU. On a Mac, the GPU and system RAM are
+one pool, so a model fits when its files and context fit in unified memory.
 
 ## Commands
 
@@ -257,7 +305,7 @@ still lands.
 | `wheels.python` | yes | Target Python version, quoted: `"3.12"`. The wheels only install on that version. |
 | `wheels.platforms` | yes | pip platform tags, one wheelhouse each: `manylinux_2_28_x86_64` (or another glibc version, `manylinux2014_x86_64`, `*_aarch64`), `win_amd64`, `win_arm64`, `macosx_11_0_arm64` style. |
 | `wheels.requirements` | | Requirements files, as paths inside the runtime's source. They are read from the archived source at `ref`, so they match the pinned commit. `-r` includes are followed. |
-| `wheels.packages` | | Extra requirement lines, such as a CUDA build of PyTorch. `requirements` or `packages` is needed. |
+| `wheels.packages` | | Extra requirement lines, such as a CUDA build of PyTorch. `requirements` or `packages` is needed. Environment markers pick lines per platform, e.g. `"torch==2.14.1+cu130; sys_platform != 'darwin'"` and `"torch==2.14.1; sys_platform == 'darwin'"`. |
 | `wheels.index_url` | | Primary package index, e.g. `https://download.pytorch.org/whl/cu130`. Default: PyPI. |
 | `wheels.extra_index_urls` | | More indexes. Every index is searched for the best match. |
 | `wheels.start` | | How to start the runtime once installed. Written to `INSTALL.md`. |
@@ -310,8 +358,10 @@ For each platform, `uv pip compile` resolves the requirements files and
 --only-binary=:all:` fetches one wheel per pin. uv does the resolving because
 `pip download --platform` evaluates environment markers for the machine it
 runs on: a Linux run would leave out the Windows-only dependencies of a
-Windows set. pip comes from the script's environment if it has one, else from
-`uv run --with pip`. Installing needs only Python and pip:
+Windows set. For a macOS tag such as `macosx_14_0_arm64`, the resolve targets
+that macOS release, so wheels built for macOS 14 (PyTorch's) qualify. pip
+comes from the script's environment if it has one, else from `uv run --with
+pip`. Installing needs only Python and pip:
 
 ```bash
 cd _runtimes/ComfyUI

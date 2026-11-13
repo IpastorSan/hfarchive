@@ -95,7 +95,8 @@ profiles:
 # Runtimes to archive next to the models. `ref` is a release tag where
 # the project publishes releases (its commit is in `notes`), otherwise a
 # commit sha. `release_assets` globs pick the Linux x64 and Windows CUDA
-# builds from that release. Tags work like model tags for profiles.
+# builds from that release, plus the macOS arm64 (Apple Silicon) build where
+# there is one. Tags work like model tags for profiles.
 runtimes:
   - id: llama.cpp
     git: https://github.com/ggml-org/llama.cpp
@@ -105,6 +106,7 @@ runtimes:
       - "cudart-llama-b12359-bin-ubuntu-cuda-*-x64.tar.gz"
       - "llama-b12359-bin-win-cuda-*-x64.zip"
       - "cudart-llama-bin-win-cuda-*-x64.zip"
+      - "llama-b12359-bin-macos-arm64.tar.gz"
     tags: [core, extended, llm, tier-8gb, tier-16gb, tier-24gb]
     enabled: true
     notes: |
@@ -112,7 +114,11 @@ runtimes:
       b1b770d90d94cad9e9ea5b993bdbc383a522fb28. The v1.0.0 release itself only
       carries nightly-tag.txt, so the binaries come from b12359. CUDA 12.x
       builds cover Turing (RTX 20) upwards. Binaries: llama-server, llama-cli;
-      --fit and --jinja are on by default in this build.
+      --fit and --jinja are on by default in this build. macOS arm64 build:
+      Metal on Apple Silicon, same binaries and flags. The tier tags assume an
+      NVIDIA card; on a Mac, GPU and RAM share one pool, so a model fits when
+      its file plus context fits in about three quarters of unified memory
+      (estimate), and --n-cpu-moe has nothing to offload to.
 
   - id: ComfyUI
     git: https://github.com/Comfy-Org/ComfyUI
@@ -132,12 +138,24 @@ runtimes:
       newer; GTX 10 cards need cu126, as in the cu126 portable). torch 2.14.1
       is the newest stable release on that index; torchaudio has been in
       maintenance since 2.9 and the index's newest build is 2.11.0. Python
-      3.12: supported by ComfyUI, vLLM and transformers alike.
+      3.12: supported by ComfyUI, vLLM and transformers alike. macOS (Apple
+      Silicon, macOS 14+): no release asset; the wheels pin the same torch
+      versions from PyPI, which use the GPU through MPS (the README asks for a
+      nightly; stable is what can be pinned). On MPS, ComfyUI loads fp8
+      weights at 16 bits (comfy/model_management.py), so fp8 files take about
+      twice their size in memory; GGUF and bf16 files load as they are.
     wheels:
       python: "3.12"
-      platforms: [manylinux_2_28_x86_64, win_amd64]
+      platforms: [manylinux_2_28_x86_64, win_amd64, macosx_14_0_arm64]
       requirements: [requirements.txt]
-      packages: ["torch==2.14.1+cu130", "torchvision==0.29.1+cu130", "torchaudio==2.11.0+cu130"]
+      # CUDA builds for Linux and Windows; PyPI's builds (MPS) for macOS, which
+      # the cu130 index does not carry.
+      packages: ["torch==2.14.1+cu130; sys_platform != 'darwin'",
+                 "torchvision==0.29.1+cu130; sys_platform != 'darwin'",
+                 "torchaudio==2.11.0+cu130; sys_platform != 'darwin'",
+                 "torch==2.14.1; sys_platform == 'darwin'",
+                 "torchvision==0.29.1; sys_platform == 'darwin'",
+                 "torchaudio==2.11.0; sys_platform == 'darwin'"]
       index_url: https://download.pytorch.org/whl/cu130
       extra_index_urls: [https://pypi.org/simple]
       start: |
@@ -157,7 +175,7 @@ runtimes:
       converts and quantizes image models.
     wheels:
       python: "3.12"
-      platforms: [manylinux_2_28_x86_64, win_amd64]
+      platforms: [manylinux_2_28_x86_64, win_amd64, macosx_14_0_arm64]
       requirements: [requirements.txt]
       start: |
         Unpack the source into ComfyUI's custom_nodes/ folder and install these
@@ -177,10 +195,11 @@ runtimes:
       v26-10-30 = commit da5f435cd9a9e54ad27eed417ed72b1f2543ef41 (the release
       has no assets). Install it instead of city96's pack when running Krea 2
       (both register the same node names). Its requirements add comfy-kitchen,
-      which ComfyUI already pins.
+      which ComfyUI already pins. Its INT4 (W4A4) and Triton K-quant backends
+      are CUDA only; on macOS the GGUF quants run through the plain loader.
     wheels:
       python: "3.12"
-      platforms: [manylinux_2_28_x86_64, win_amd64]
+      platforms: [manylinux_2_28_x86_64, win_amd64, macosx_14_0_arm64]
       requirements: [requirements.txt]
       start: |
         Unpack the source into ComfyUI's custom_nodes/ folder and install these
@@ -198,13 +217,16 @@ runtimes:
       - "cudart-sd-bin-win-cu12-x64.zip"
       - "sd-master-b9d7176-bin-Linux-Ubuntu-26.04-x86_64-vulkan.zip"
       - "sd-master-b9d7176-bin-Linux-Ubuntu-26.04-x86_64.zip"
+      - "sd-master-b9d7176-bin-Darwin-macOS-*-arm64.zip"
     tags: [core, extended, image, tier-8gb, tier-16gb, tier-24gb]
     enabled: true
     notes: |
       master-1091-b9d7176 = commit b9d7176bf88fe465576e0aafbe47ba253ffcfc2c.
       There is no Linux CUDA build: use the Vulkan build (works on NVIDIA) or
       build with -DSD_CUDA=ON. Binary: sd-cli. Model guides in docs/
-      (qwen_image_2.1.md, minimax_h3_image.md).
+      (qwen_image_2.1.md, minimax_h3_image.md). The macOS arm64 build is
+      configured without -DSD_METAL=ON, which docs/build.md gives for running
+      on the Apple GPU: rebuild from the archived source with it for Metal.
 
   - id: edge0
     git: https://github.com/Edge0-AI/Edge0
@@ -219,6 +241,8 @@ runtimes:
       (edge0-strata/EDGE0.md, CUDA 13) and edge0-infer
       (edge0-infer/docs/getting-started.md). 145B/120B need an NVIDIA GPU of
       compute 7.5+ with 16 GiB+ VRAM and the CUDA 13 toolkit (release notes).
+      macOS (Apple Silicon): no release asset; build edge0-infer with `cmake
+      --preset mac-metal` (README). It runs edge0-35b only, on Metal or CPU.
 
   - id: vllm
     git: https://github.com/vllm-project/vllm

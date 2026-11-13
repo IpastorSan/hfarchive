@@ -1,0 +1,44 @@
+name: tests
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash  # Git Bash on Windows
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: astral-sh/setup-uv@v10.3.3
+        with:
+          python-version: "3.12"
+          enable-cache: false
+
+      - name: Tests
+        run: uv run --no-project --with pytest --with huggingface_hub --with pyyaml pytest -q
+
+      # `uv run --script` on every OS: Windows does not read the shebang.
+      - name: Script runs
+        run: |
+          uv run --script hfarchive --version
+          uv run --script hfarchive --help
+          uv run --script hfarchive --config examples/archive-2026-11.yaml --list
+
+      - name: --init in an empty directory
+        working-directory: ${{ runner.temp }}
+        run: |
+          mkdir init-smoke && cd init-smoke
+          uv run --script "$GITHUB_WORKSPACE/hfarchive" --init --minimal
+          uv run --script "$GITHUB_WORKSPACE/hfarchive" --list
