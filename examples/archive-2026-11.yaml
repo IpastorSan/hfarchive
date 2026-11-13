@@ -1,0 +1,1310 @@
+# Local model archive, November 2026
+#
+# Open-weight models to archive on external drives, chosen to run on three
+# consumer hardware tiers:
+#
+#   tier-8gb   8 GB VRAM (Turing-class, no bf16/FP8/FP4) + ~128 GB RAM.
+#              GGUF everywhere; big MoE models keep their experts in RAM.
+#   tier-16gb  16 GB VRAM (e.g. 4060 Ti / 5060 Ti 16 GB) + 64-128 GB RAM.
+#   tier-24gb  24 GB VRAM (3090 / 4090; a few entries need a 32 GB card,
+#              noted per entry) + 128 GB RAM.
+#
+# An entry is tagged with every tier the model is practical on. Entries
+# that run only slowly on a tier (dense 27-31B models on 8 GB) are not
+# tagged with it. `core` is the set worth keeping first; `extended` adds
+# bigger quants, second copies and niche models.
+#
+# Image and video models are split into one entry per file: the diffusion
+# model, each text encoder, VAE and upscaler. Components used by several
+# models (flux2-vae, qwen_3_4b, flux1-ae, t5xxl) have one entry each.
+#
+# Every repo id and file below was checked against the Hugging Face Hub API
+# on 2026-11-13. `approx_bytes` is the size of the files the globs match.
+# Licences are recorded as the Hub reports them; several are non-commercial
+# or regionally restricted, so read them before using a model.
+#
+# Fields per entry:
+#   id           stable local name, used by --only / --exclude / --enable
+#   hf_repo      canonical Hub repo id (exact casing)
+#   revision     optional git revision (branch, tag or commit); default: main
+#   include      optional glob list; if set, ONLY matching files are downloaded
+#   exclude      optional glob list, applied after include
+#   category     top-level folder on the destination drive
+#   tags         used by profiles
+#   license      as reported by the Hub
+#   gated        true if the repo needs accepted terms + an HF token
+#   approx_bytes matched bytes (generated; see --refresh-sizes)
+#   enabled      false = skipped unless a profile opts in, or --enable is used
+#   notes        why these globs, substitutions, hardware hints
+#
+# NOTE ON GLOBS: Hub patterns are fnmatch-style and `*` DOES cross `/`.
+# Unsloth repos keep stub copies of the first shard under Shard_Rewrite/, so
+# sharded quants are pinned by folder (`UD-IQ1_S/*`), never by `*UD-IQ1_S*`.
+
+default_profile: core
+
+defaults:
+  min_free_gb: 50          # refuse to download with less headroom than this
+  large_repo_gb: 100       # entries at/above this need --allow-large
+  jobs: 2                  # repos downloaded in parallel
+  max_workers_per_repo: 8  # files in parallel within one repo
+
+profiles:
+  core:
+    description: >-
+      DEFAULT. The models worth keeping first: LLMs for every tier,
+      security, uncensored and decision models, and the main image and
+      video models with their encoders and VAEs.
+    any_tags: [core]
+
+  extended:
+    description: >-
+      Core plus bigger quants, second copies, the largest MoE models and
+      niche image/video models. Does not fit on one 2 TB drive.
+    any_tags: [core, extended]
+
+  llm:
+    description: Every language model (general, security, uncensored, decision).
+    any_tags: [llm]
+
+  image-video:
+    description: Every image and video model and component.
+    any_tags: [image, video]
+
+  tier-8gb:
+    description: Practical on 8 GB VRAM + ~128 GB RAM.
+    any_tags: [tier-8gb]
+
+  tier-16gb:
+    description: Practical on 16 GB VRAM + 64-128 GB RAM.
+    any_tags: [tier-16gb]
+
+  tier-24gb:
+    description: Practical on 24 GB VRAM + 128 GB RAM.
+    any_tags: [tier-24gb]
+
+  all:
+    description: Everything marked enabled in this file.
+    all: true
+
+models:
+
+  # ================================================================== LLMs
+  # Run with llama.cpp. MoE models: keep experts in RAM with --n-cpu-moe N
+  # or -ot ".ffn_.*_exps.=CPU". Memory rule: VRAM + RAM >= file size + 10-20%.
+
+  - id: qwen3.8-flash-next-ud-q3kxl
+    hf_repo: unsloth/Qwen3.8-Flash-Next-GGUF
+    include:
+      - UD-Q3_K_XL/*
+      - mmproj-F16.gguf
+      - README.md
+    category: llm
+    tags: [core, llm, tier-8gb, tier-16gb, tier-24gb]
+    license: other
+    gated: false
+    approx_bytes: 90369012966
+    enabled: true
+    notes: >-
+      125B / 6B-active MoE with vision. Needs ~8 GB VRAM + 96 GB RAM. The
+      repo is ~1.9 TB; this keeps one quant plus the vision projector.
+
+  - id: qwen3.8-flash-next-ud-iq4xs
+    hf_repo: unsloth/Qwen3.8-Flash-Next-GGUF
+    include:
+      - UD-IQ4_XS/*
+      - mmproj-F16.gguf
+      - README.md
+    category: llm
+    tags: [extended, llm, tier-16gb, tier-24gb]
+    license: other
+    gated: false
+    approx_bytes: 94576424198
+    enabled: true
+    notes: Higher quant of the above. Needs ~16 GB VRAM + 96 GB RAM.
+
+  - id: glm-5.3-flash-ud-iq1s
+    hf_repo: unsloth/GLM-5.3-Flash-GGUF
+    include:
+      - UD-IQ1_S/*
+      - mmproj-F16.gguf
+      - README.md
+    category: llm
+    tags: [core, llm, tier-8gb, tier-16gb, tier-24gb]
+    license: mit
+    gated: false
+    approx_bytes: 94215300761
+    enabled: true
+    notes: >-
+      320B / 18B-active MoE. Needs ~8 GB VRAM + 100 GB RAM; slow (a few
+      tok/s) on 8 GB. Strong for multi-step agentic and security work.
+
+  - id: glm-5.3-flash-ud-q2kxl
+    hf_repo: unsloth/GLM-5.3-Flash-GGUF
+    include:
+      - UD-Q2_K_XL/*
+      - mmproj-F16.gguf
+      - README.md
+    category: llm
+    tags: [extended, llm, tier-24gb]
+    license: mit
+    gated: false
+    approx_bytes: 109848127225
+    enabled: true
+    notes: Higher quant of the above. Needs ~24 GB VRAM + 124 GB RAM.
+
+  - id: glm-5.3-ud-iq1s
+    hf_repo: unsloth/GLM-5.3-GGUF
+    include:
+      - UD-IQ1_S/*
+      - README.md
+    category: llm
+    tags: [extended, llm]
+    license: other
+    gated: false
+    approx_bytes: 216715380279
+    enabled: true
+    notes: >-
+      Archive only; at least 217 GB, doesn't fit in 128 GB RAM + 24 GB VRAM.
+      Needs 256 GB+ of RAM or a multi-GPU box, so no tier tag. Over the
+      large-repo threshold: needs --allow-large.
+
+  - id: gpt-oss-120b-f16
+    hf_repo: unsloth/gpt-oss-120b-GGUF
+    include:
+      - gpt-oss-120b-F16.gguf
+      - config.json
+      - template
+      - params
+      - README.md
+    category: llm
+    tags: [core, llm, tier-8gb, tier-16gb, tier-24gb]
+    license: apache-2.0
+    gated: false
+    approx_bytes: 65369035990
+    enabled: true
+    notes: >-
+      117B / 5B-active MoE. The weights are natively MXFP4, so the "F16"
+      file is the lossless one at ~65 GB. Needs ~8 GB VRAM + 64 GB RAM.
+
+  - id: qwen3-coder-next-ud-q4kxl
+    hf_repo: unsloth/Qwen3-Coder-Next-GGUF
+    include:
+      - Qwen3-Coder-Next-UD-Q4_K_XL.gguf
+      - README.md
+    category: llm
+    tags: [core, llm, tier-8gb, tier-16gb, tier-24gb]
+    license: apache-2.0
+    gated: false
+    approx_bytes: 49608488431
+    enabled: true
+    notes: 80B / 3B-active coding MoE. Needs ~8 GB VRAM + 48 GB RAM.
+
+  - id: qwen3.6-35b-a3b-ud-q4kxl
+    hf_repo: unsloth/Qwen3.6-35B-A3B-GGUF
+    include:
+      - Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf
+      - mmproj-F16.gguf
+      - README.md
+    category: llm
+    tags: [core, llm, tier-8gb, tier-16gb, tier-24gb]
+    license: apache-2.0
+    gated: false
+    approx_bytes: 23259806408
+    enabled: true
+    notes: 35B / 3B-active MoE with vision. Fits fully in VRAM on 24 GB.
+
+  - id: nex-n2.5-mini-q4km
+    hf_repo: abenzerps/Nex-N2.5-mini-GGUF
+    include:
+      - Nex-N2.5-mini-Q4_K_M.gguf
+      - mmproj-Nex-N2.5-mini-F16.gguf
+      - chat_template.jinja
+      - README.md
+    category: llm
+    tags: [core, llm, tier-8gb, tier-16gb, tier-24gb]
+    license: apache-2.0
+    gated: false
+    approx_bytes: 22066053633
+    enabled: true
+    notes: 35B MoE with vision, tuned for agentic use. Needs ~8 GB VRAM + 20 GB RAM.
+
+  - id: gemma-4-26b-a4b-qat-ud-q4kxl
+    hf_repo: unsloth/gemma-4-26B-A4B-it-qat-GGUF
+    include:
+      - gemma-4-26B-A4B-it-qat-UD-Q4_K_XL.gguf
+      - mmproj-F16.gguf
+      - config.json
+      - README.md
+    category: llm
+    tags: [core, llm, tier-8gb, tier-16gb, tier-24gb]
+    license: apache-2.0
+    gated: false
+    approx_bytes: 15442140684
+    enabled: true
+    notes: 26B / 4B-active MoE with vision, QAT. Fits fully in VRAM on 16 GB.
+
+  - id: lfm2.5-24b-a2b-q4km
+    hf_repo: LiquidAI/LFM2.5-24B-A2B-GGUF
+    include:
+      - LFM2.5-24B-A2B-Q4_K_M.gguf
+      - LICENSE
+      - README.md
+    category: llm
+    tags: [core, llm, tier-8gb, tier-16gb, tier-24gb]
+    license: other
+    gated: false
+    approx_bytes: 14526271202
+    enabled: true
+    notes: 24B / 2B-active MoE. Fast even from system RAM.
+
+  - id: ernie-4.5-21b-a3b-thinking-q4km
+    hf_repo: bartowski/baidu_ERNIE-4.5-21B-A3B-Thinking-GGUF
+    include:
+      - baidu_ERNIE-4.5-21B-A3B-Thinking-Q4_K_M.gguf
+      - README.md
+    category: llm
+    tags: [core, llm, tier-8gb, tier-16gb, tier-24gb]
+    license: unknown
+    gated: false
+    approx_bytes: 13499286684
+    enabled: true
+    notes: >-
+      21B / 3B-active reasoning MoE. The Hub reports no licence for this
+      quant repo; the base model is Apache-2.0.
+
+  - id: gemma-4-12b-q4km
+    hf_repo: unsloth/gemma-4-12b-it-GGUF
+    include:
+      - gemma-4-12b-it-Q4_K_M.gguf
+      - mmproj-F16.gguf
+      - README.md
+    category: llm
+    tags: [core, llm, tier-8gb, tier-16gb, tier-24gb]
+    license: apache-2.0
+    gated: false
+    approx_bytes: 7297008930
+    enabled: true
+    notes: 12B dense with vision. Fits fully in 8 GB VRAM.
+
+  - id: qwen3.5-9b-ud-q4kxl
+    hf_repo: unsloth/Qwen3.5-9B-GGUF
+    include:
+      - Qwen3.5-9B-UD-Q4_K_XL.gguf
+      - mmproj-F16.gguf
+      - README.md
+    category: llm
+    tags: [core, llm, tier-8gb, tier-16gb, tier-24gb]
+    license: apache-2.0
+    gated: false
+    approx_bytes: 6884340552
+    enabled: true
+    notes: 9B dense with vision. Fits fully in 8 GB VRAM.
+
+  - id: lfm3-1.7b-q4km
+    hf_repo: LiquidAI/LFM3-1.7B-GGUF
+    include:
+      - LFM3-1.7B-Q4_K_M.gguf
+      - LICENSE
+      - README.md
+    category: llm
+    tags: [core, llm, tier-8gb, tier-16gb, tier-24gb]
+    license: other
+    gated: false
+    approx_bytes: 1099645371
+    enabled: true
+    notes: 1.7B dense, phone-class. Runs on anything.
+
+  - id: qwen3.8-27b-ud-iq4xs
+    hf_repo: unsloth/Qwen3.8-27B-GGUF
+    include:
+      - Qwen3.8-27B-UD-IQ4_XS.gguf
+      - mmproj-F16.gguf
+      - config.json
+      - README.md
+    category: llm
+    tags: [core, llm, tier-16gb]
+    license: apache-2.0
+    gated: false
+    approx_bytes: 15280529457
+    enabled: true
+    notes: >-
+      27B dense with vision, sized to fit 16 GB VRAM. Runs on 8 GB only by
+      offloading, at 2-4 tok/s.
+
+  - id: qwen3.8-27b-ud-q4kxl
+    hf_repo: unsloth/Qwen3.8-27B-GGUF
+    include:
+      - Qwen3.8-27B-UD-Q4_K_XL.gguf
+      - mmproj-F16.gguf
+      - config.json
+      - README.md
+    category: llm
+    tags: [core, llm, tier-24gb]
+    license: apache-2.0
+    gated: false
+    approx_bytes: 18587025457
+    enabled: true
+    notes: Higher quant of the above for 24 GB VRAM.
+
+  - id: gemma-4-31b-ud-q3kxl
+    hf_repo: unsloth/gemma-4-31B-it-GGUF
+    include:
+      - gemma-4-31B-it-UD-Q3_K_XL.gguf
+      - mmproj-F16.gguf
+      - config.json
+      - README.md
+    category: llm
+    tags: [core, llm, tier-16gb]
+    license: apache-2.0
+    gated: false
+    approx_bytes: 16579213137
+    enabled: true
+    notes: >-
+      31B dense with vision. Fits 16 GB VRAM with a short context. Runs on
+      8 GB only by offloading, at 2-4 tok/s.
+
+  - id: gemma-4-31b-ud-q4kxl
+    hf_repo: unsloth/gemma-4-31B-it-GGUF
+    include:
+      - gemma-4-31B-it-UD-Q4_K_XL.gguf
+      - mmproj-F16.gguf
+      - config.json
+      - README.md
+    category: llm
+    tags: [core, llm, tier-24gb]
+    license: apache-2.0
+    gated: false
+    approx_bytes: 20021960529
+    enabled: true
+    notes: Higher quant of the above for 24 GB VRAM.
+
+  - id: edge0-145b-q3k
+    hf_repo: Edge0/Edge0-145B-q3k
+    category: llm
+    tags: [extended, llm, tier-16gb, tier-24gb]
+    license: other
+    gated: false
+    approx_bytes: 105368207710
+    enabled: true
+    notes: >-
+      Qwen3.8-Flash-Next derivative with latent MoE and SSD-streamed
+      weights; tested by its authors on 16 GB VRAM + 20 GB RAM. Not a
+      llama.cpp model: the runtime lives at github.com/Edge0-AI/Edge0
+      (CUDA 13), back it up too. Whole repo (custom .bin/.gguf layout).
+      Over the large-repo threshold: needs --allow-large.
+
+  - id: edge0-120b-q3k
+    hf_repo: Edge0/Edge0-120B-q3k
+    category: llm
+    tags: [extended, llm, tier-16gb, tier-24gb]
+    license: other
+    gated: false
+    approx_bytes: 92281880127
+    enabled: true
+    notes: >-
+      Smaller sibling of Edge0-145B, same format. Runtime lives at
+      github.com/Edge0-AI/Edge0 (CUDA 13), not llama.cpp. Whole repo.
+
+  - id: edge0-35b-a3b-preview
+    hf_repo: Edge0/Edge0-35B-A3B-preview
+    category: llm
+    tags: [extended, llm, tier-8gb, tier-16gb, tier-24gb]
+    license: apache-2.0
+    gated: false
+    approx_bytes: 19738197958
+    enabled: true
+    notes: >-
+      35B / 3B-active MoE based on Qwen3.6-35B-A3B, 4-bit safetensors plus
+      Edge0's LoRA and pre-router (~20 GB). Runs only on the Edge0 runtime
+      (github.com/Edge0-AI/Edge0), which targets ~3 GB of active memory.
+
+  - id: nemotron-3.5-super-vl-q4_0
+    hf_repo: ggml-org/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-GGUF
+    include:
+      - NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-Q4_0.gguf
+      - mmproj-NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-Q8_0.gguf
+      - README.md
+    category: llm
+    tags: [extended, llm, tier-8gb, tier-16gb, tier-24gb]
+    license: other
+    gated: false
+    approx_bytes: 73068474261
+    enabled: true
+    notes: >-
+      120B / 12B-active MoE with vision. Needs ~8 GB VRAM + 72 GB RAM;
+      slow on 8 GB. Official ggml-org conversion.
+
+  - id: deepseek-v4.1-flash-1017-ud-iq1s
+    hf_repo: unsloth/DeepSeek-V4.1-Flash-1017-GGUF
+    include:
+      - UD-IQ1_S/*
+      - mmproj-F16.gguf
+      - README.md
+    category: llm
+    tags: [extended, llm, tier-8gb, tier-16gb, tier-24gb]
+    license: mit
+    gated: false
+    approx_bytes: 233950619839
+    enabled: true
+    notes: >-
+      552B / 16B-active MoE. The last ~110 GB shard is a lookup table that
+      can stay on disk, so it barely runs on 8 GB VRAM + 124 GB RAM at
+      1-3 tok/s. Over the large-repo threshold: needs --allow-large.
+
+  # ======================================================== cybersecurity
+
+  - id: foundation-sec-8b-reasoning-q8
+    hf_repo: fdtn-ai/Foundation-Sec-8B-Reasoning-Q8_0-GGUF
+    include:
+      - foundation-sec-8b-reasoning-q8_0.gguf
+      - "*.json"
+      - README.md
+    category: security
+    tags: [core, llm, security, tier-8gb, tier-16gb, tier-24gb]
+    license: other
+    gated: false
+    approx_bytes: 8558226074
+    enabled: true
+    notes: CVE/CWE and threat-intel reasoning. Fits fully in 8 GB VRAM.
+
+  - id: foundation-sec-8b-instruct-q4km
+    hf_repo: mradermacher/Foundation-Sec-8B-Instruct-GGUF
+    include:
+      - Foundation-Sec-8B-Instruct.Q4_K_M.gguf
+      - README.md
+    category: security
+    tags: [core, llm, security, tier-8gb, tier-16gb, tier-24gb]
+    license: other
+    gated: false
+    approx_bytes: 4921470153
+    enabled: true
+
+  - id: whiterabbitneo-2.5-7b-q4km
+    hf_repo: bartowski/WhiteRabbitNeo-2.5-Qwen-2.5-Coder-7B-GGUF
+    include:
+      - WhiteRabbitNeo-2.5-Qwen-2.5-Coder-7B-Q4_K_M.gguf
+      - README.md
+    category: security
+    tags: [extended, llm, security, tier-8gb, tier-16gb, tier-24gb]
+    license: apache-2.0
+    gated: false
+    approx_bytes: 4683083487
+    enabled: true
+    notes: >-
+      Offensive-security tune on an old Qwen2.5-Coder-7B base. The official
+      WhiteRabbitNeo/WhiteRabbitNeo-2.5-Qwen-2.5-Coder-7B repo is bf16
+      safetensors only (~15 GB); this is the most-downloaded GGUF of it.
+
+  - id: lily-cybersecurity-7b-q4km
+    hf_repo: segolilylabs/Lily-Cybersecurity-7B-v0.2-GGUF
+    include:
+      - Lily-7B-Instruct-v0.2.Q4_K_M.gguf
+      - "*.json"
+      - tokenizer.model
+      - ggml-vocab-llama.gguf
+      - README.md
+    category: security
+    tags: [extended, llm, security, tier-8gb, tier-16gb, tier-24gb]
+    license: apache-2.0
+    gated: false
+    approx_bytes: 4371454121
+    enabled: true
+    notes: Security tune on an old Mistral-7B base. The author's own GGUF repo.
+
+  # =============================================== abliterated / uncensored
+  # Heretic-style abliteration damages less than manual abliteration; math
+  # reasoning suffers most. Keep the originals too.
+
+  - id: qwen3.8-27b-abliterated-q4km
+    hf_repo: huihui-ai/Huihui-Qwen3.8-27B-abliterated-GGUF
+    include:
+      - Huihui-Qwen3.8-27B-abliterated-UD-DW-Q4_K_M.gguf
+      - mmproj-model-bf16.gguf
+      - README.md
+    category: uncensored
+    tags: [core, llm, uncensored, tier-16gb, tier-24gb]
+    license: apache-2.0
+    gated: false
+    approx_bytes: 17482470526
+    enabled: true
+    notes: >-
+      The repo has no plain Q4_K_M; UD-DW-Q4_K_M is the 16.6 GB Q4_K_M
+      variant. Skips the Ternary files (need a llama.cpp fork), the `_L`
+      files and the patch-unsloth/ folder.
+
+  - id: qwen3.6-35b-a3b-heretic-q4km
+    hf_repo: llmfan46/Qwen3.6-35B-A3B-uncensored-heretic-Native-MTP-Preserved-GGUF
+    include:
+      - Qwen3.6-35B-A3B-uncensored-heretic-Native-MTP-Preserved-Q4_K_M.gguf
+      - Qwen3.6-35B-A3B-uncensored-heretic-Native-MTP-Preserved-mmproj-BF16.gguf
+      - README.md
+    category: uncensored
+    tags: [core, llm, uncensored, tier-8gb, tier-16gb, tier-24gb]
+    license: apache-2.0
+    gated: false
+    approx_bytes: 22683212233
+    enabled: true
+    notes: Heretic abliteration of Qwen3.6-35B-A3B, MTP head preserved. With vision.
+
+  - id: gemma-4-31b-abliterated-q4k
+    hf_repo: huihui-ai/Huihui-gemma-4-31B-it-qat-q4_0-unquantized-abliterated-GGUF
+    include:
+      - Huihui-gemma-4-31B-it-qat-q4_0-unquantized-abliterated-Q4_K.gguf
+      - mmproj-model-bf16.gguf
+      - README.md
+    category: uncensored
+    tags: [extended, llm, uncensored, tier-24gb]
+    license: apache-2.0
+    gated: false
+    approx_bytes: 19887791839
+    enabled: true
+    notes: >-
+      The repo has no Q4_0 file; Q4_K (~18.7 GB) is its only quant besides
+      bf16. Needs 24 GB VRAM.
+
+  - id: qwen3.8-flash-next-abliterated-iq3xxs
+    hf_repo: huihui-ai/Huihui-Qwen3.8-Flash-Next-abliterated-GGUF
+    include:
+      - swift-IQ3_XXS/*
+      - mmproj-Swift-Qwen3.8-Flash-Next-BF16.gguf
+      - LICENSE
+      - README.md
+    category: uncensored
+    tags: [extended, llm, uncensored, tier-8gb, tier-16gb, tier-24gb]
+    license: other
+    gated: false
+    approx_bytes: 76873623581
+    enabled: true
+    notes: >-
+      The only ~3-bit quant in the repo is the Swift GSQ-RCO IQ3_XXS
+      (~76 GB). The other options are IQ2_XS (~68 GB) and Q8_0 (~188 GB).
+
+  # ===================================================== decision models
+  # Give a situation plus a fixed list of options and read the per-option
+  # logprobs from llama.cpp (routing, triage, yes/no, scoring).
+
+  - id: clef-flash-q4km
+    hf_repo: ggml-org/Clef-Flash-GGUF
+    include:
+      - Clef-Flash-Q4_K_M.gguf
+      - mmproj-Clef-Flash-Q8_0.gguf
+      - README.md
+    category: decision
+    tags: [core, llm, decision, tier-8gb, tier-16gb, tier-24gb]
+    license: apache-2.0
+    gated: false
+    approx_bytes: 7357012111
+    enabled: true
+    notes: Cloudflare's decision model on Qwen3.5-9B, with vision. Fits fully in 8 GB VRAM.
+
+  - id: clef-flash-q8
+    hf_repo: ggml-org/Clef-Flash-GGUF
+    include:
+      - Clef-Flash-Q8_0.gguf
+      - mmproj-Clef-Flash-Q8_0.gguf
+      - README.md
+    category: decision
+    tags: [core, llm, decision, tier-16gb, tier-24gb]
+    license: apache-2.0
+    gated: false
+    approx_bytes: 10281490575
+    enabled: true
+    notes: Q8_0 copy of Clef-Flash for 16 GB+ VRAM.
+
+  - id: clef-q4km
+    hf_repo: ggml-org/Clef-GGUF
+    include:
+      - Clef-Q4_K_M.gguf
+      - mmproj-Clef-Q8_0.gguf
+      - README.md
+    category: decision
+    tags: [core, llm, decision, tier-24gb]
+    license: apache-2.0
+    gated: false
+    approx_bytes: 20169384087
+    enabled: true
+    notes: >-
+      Cloudflare's decision model on Qwen3.8-27B, with vision. Dense, so
+      only slow on 8 GB by offloading.
+
+  - id: openjev-q4km
+    hf_repo: openjev/openjev-GGUF
+    include:
+      - OpenJev-Q4_K_M.gguf
+      - LICENSE*
+      - NOTICE
+      - MANIFEST.json
+      - SHA256SUMS
+      - SIZES.txt
+      - README.md
+    category: decision
+    tags: [core, llm, decision, tier-16gb, tier-24gb]
+    license: cc-by-nc-4.0
+    gated: false
+    approx_bytes: 16547448644
+    enabled: true
+    notes: >-
+      27B text decision model, a community open-weights reproduction of a
+      hosted-only model. Tight on 16 GB VRAM. Ignore the many unrelated
+      `*-jev-style-*` repos.
+
+  - id: clef-omni
+    hf_repo: Cloudflare/clef-omni
+    category: decision
+    tags: [extended, llm, decision, tier-16gb, tier-24gb]
+    license: apache-2.0
+    gated: false
+    approx_bytes: 70755893701
+    enabled: true
+    notes: >-
+      Audio + vision decision model on Qwen3-Omni-30B-A3B. Safetensors only,
+      no GGUF: run with vLLM or transformers. Whole repo.
+
+  - id: openjev-flash-9b
+    hf_repo: openjev/OpenJev-Flash-9B
+    category: decision
+    tags: [extended, llm, decision, tier-8gb, tier-16gb, tier-24gb]
+    license: cc-by-nc-4.0
+    gated: false
+    approx_bytes: 18840366318
+    enabled: true
+    notes: >-
+      9B decision model, bf16 safetensors only (~19 GB). On 8 GB it needs
+      on-the-fly quantisation or a GGUF conversion. Whole repo.
+
+  # ================================================================ image
+  # ComfyUI + ComfyUI-GGUF. VRAM need ~ diffusion-model file + 1-2 GB; text
+  # encoders can sit in system RAM. fp8 files are upcast on GPUs without FP8.
+
+  # ---- shared components
+  - id: flux2-vae
+    hf_repo: Comfy-Org/Flux-2-Klein-4B
+    include:
+      - split_files/vae/flux2-vae.safetensors
+    category: image
+    tags: [core, image, tier-8gb, tier-16gb, tier-24gb]
+    license: apache-2.0
+    gated: false
+    approx_bytes: 336211292
+    enabled: true
+    notes: VAE shared by every FLUX.2 model (klein 4B, klein 9B, dev).
+
+  - id: qwen_3_4b
+    hf_repo: Comfy-Org/Flux-2-Klein-4B
+    include:
+      - split_files/text_encoders/qwen_3_4b.safetensors
+    category: image
+    tags: [core, image, tier-8gb, tier-16gb, tier-24gb]
+    license: apache-2.0
+    gated: false
+    approx_bytes: 8044982048
+    enabled: true
+    notes: Text encoder shared by FLUX.2 klein 4B and Z-Image-Turbo.
+
+  - id: flux1-ae
+    hf_repo: Comfy-Org/Z-Image-Turbo
+    include:
+      - split_files/vae/ae.safetensors
+    category: image
+    tags: [core, image, tier-8gb, tier-16gb, tier-24gb]
+    license: apache-2.0
+    gated: false
+    approx_bytes: 335304388
+    enabled: true
+    notes: FLUX.1 `ae` VAE, shared by Z-Image-Turbo, Chroma1-HD and FLUX.1 Kontext.
+
+  - id: t5xxl-fp16
+    hf_repo: comfyanonymous/flux_text_encoders
+    include:
+      - t5xxl_fp16.safetensors
+    category: image
+    tags: [core, image, tier-8gb, tier-16gb, tier-24gb]
+    license: apache-2.0
+    gated: false
+    approx_bytes: 9787841024
+    enabled: true
+    notes: T5-XXL text encoder, shared by Chroma1-HD and FLUX.1 Kontext.
+
+  - id: flux1-clip-l
+    hf_repo: comfyanonymous/flux_text_encoders
+    include:
+      - clip_l.safetensors
+    category: image
+    tags: [extended, image, tier-8gb, tier-16gb, tier-24gb]
+    license: apache-2.0
+    gated: false
+    approx_bytes: 246144152
+    enabled: true
+    notes: CLIP-L text encoder for FLUX.1 Kontext (used together with t5xxl).
+
+  # ---- FLUX.2 klein 9B
+  - id: flux2-klein-9b-q4km
+    hf_repo: unsloth/FLUX.2-klein-9B-GGUF
+    include:
+      - flux-2-klein-9b-Q4_K_M.gguf
+      - LICENSE.md
+      - README.md
+    category: image
+    tags: [core, image, tier-8gb]
+    license: other
+    gated: false
+    approx_bytes: 5673930035
+    enabled: true
+    notes: Needs flux2-vae and flux2-klein-9b-qwen-3-8b-fp8.
+
+  - id: flux2-klein-9b-q8
+    hf_repo: unsloth/FLUX.2-klein-9B-GGUF
+    include:
+      - flux-2-klein-9b-Q8_0.gguf
+      - LICENSE.md
+      - README.md
+    category: image
+    tags: [core, image, tier-16gb, tier-24gb]
+    license: other
+    gated: false
+    approx_bytes: 10245721395
+    enabled: true
+    notes: Needs flux2-vae and flux2-klein-9b-qwen-3-8b-fp8.
+
+  - id: flux2-klein-9b-qwen-3-8b-fp8
+    hf_repo: Comfy-Org/Flux-2-Klein-9B
+    include:
+      - split_files/text_encoders/qwen_3_8b_fp8mixed.safetensors
+    category: image
+    tags: [core, image, tier-8gb, tier-16gb, tier-24gb]
+    license: other
+    gated: false
+    approx_bytes: 8664848742
+    enabled: true
+    notes: Qwen3-8B text encoder for FLUX.2 klein 9B.
+
+  # ---- FLUX.2 klein 4B
+  - id: flux2-klein-4b
+    hf_repo: Comfy-Org/Flux-2-Klein-4B
+    include:
+      - split_files/diffusion_models/flux-2-klein-4b.safetensors
+      - README.md
+    category: image
+    tags: [core, image, tier-8gb, tier-16gb, tier-24gb]
+    license: apache-2.0
+    gated: false
+    approx_bytes: 7751107475
+    enabled: true
+    notes: bf16 distilled model. Needs qwen_3_4b and flux2-vae.
+
+  # ---- Qwen-Image-2.1 (generation + edit)
+  - id: qwen-image-2.1-q4km
+    hf_repo: unsloth/Qwen-Image-2.1-GGUF
+    include:
+      - qwen-image-2.1-Q4_K_M.gguf
+      - README.md
+    category: image
+    tags: [core, image, tier-8gb]
+    license: other
+    gated: false
+    approx_bytes: 4199573989
+    enabled: true
+    notes: >-
+      Needs qwen3-vl-8b-encoder-q4 (or -q8) and qwen-image-2.1-vae. Also
+      documented for stable-diffusion.cpp.
+
+  - id: qwen-image-2.1-q8
+    hf_repo: unsloth/Qwen-Image-2.1-GGUF
+    include:
+      - qwen-image-2.1-Q8_0.gguf
+      - README.md
+    category: image
+    tags: [core, image, tier-16gb, tier-24gb]
+    license: other
+    gated: false
+    approx_bytes: 7640869349
+    enabled: true
+    notes: Needs qwen3-vl-8b-encoder-q8 and qwen-image-2.1-vae.
+
+  - id: qwen3-vl-8b-encoder-q4
+    hf_repo: unsloth/Qwen3-VL-8B-Instruct-GGUF
+    include:
+      - Qwen3-VL-8B-Instruct-UD-Q4_K_XL.gguf
+      - mmproj-F16.gguf
+      - README.md
+    category: image
+    tags: [core, image, tier-8gb]
+    license: apache-2.0
+    gated: false
+    approx_bytes: 6307738861
+    enabled: true
+    notes: Text encoder for Qwen-Image-2.1; mmproj is the vision tower used for edits.
+
+  - id: qwen3-vl-8b-encoder-q8
+    hf_repo: unsloth/Qwen3-VL-8B-Instruct-GGUF
+    include:
+      - Qwen3-VL-8B-Instruct-Q8_0.gguf
+      - mmproj-F16.gguf
+      - README.md
+    category: image
+    tags: [core, image, tier-16gb, tier-24gb]
+    license: apache-2.0
+    gated: false
+    approx_bytes: 9868559597
+    enabled: true
+    notes: Q8_0 text encoder for Qwen-Image-2.1.
+
+  - id: qwen-image-2.1-vae
+    hf_repo: unsloth/Qwen-Image-2.1-FP8
+    include:
+      - vae/qwen_image_2.1_vae_bf16.safetensors
+    category: image
+    tags: [core, image, tier-8gb, tier-16gb, tier-24gb]
+    license: other
+    gated: false
+    approx_bytes: 675508656
+    enabled: true
+    notes: VAE for Qwen-Image-2.1.
+
+  # ---- Z-Image-Turbo
+  - id: z-image-turbo-q8
+    hf_repo: unsloth/Z-Image-Turbo-GGUF
+    include:
+      - z-image-turbo-Q8_0.gguf
+      - README.md
+    category: image
+    tags: [core, image, tier-8gb, tier-16gb, tier-24gb]
+    license: apache-2.0
+    gated: false
+    approx_bytes: 7224722822
+    enabled: true
+    notes: Needs qwen_3_4b and flux1-ae.
+
+  # ---- Krea 2 Turbo
+  - id: krea2-turbo-q4_0
+    hf_repo: molbal/krea2-gguf
+    include:
+      - krea2_turbo_bf16-Q4_0.gguf
+      - workflows/*
+      - README.md
+    category: image
+    tags: [core, image, tier-8gb]
+    license: other
+    gated: false
+    approx_bytes: 8314024072
+    enabled: true
+    notes: >-
+      Needs the molbal/ComfyUI-GGUF fork (city96's loader does not support
+      Krea 2), plus krea2-qwen3vl-4b-fp8 and qwen-image-vae.
+
+  - id: krea2-turbo-q8
+    hf_repo: molbal/krea2-gguf
+    include:
+      - krea2_turbo_bf16-Q8_0.gguf
+      - workflows/*
+      - README.md
+    category: image
+    tags: [core, image, tier-16gb, tier-24gb]
+    license: other
+    gated: false
+    approx_bytes: 14563668104
+    enabled: true
+    notes: Q8_0 copy. Same fork and components as krea2-turbo-q4_0.
+
+  - id: krea2-qwen3vl-4b-fp8
+    hf_repo: Comfy-Org/Krea-2
+    include:
+      - text_encoders/qwen3vl_4b_fp8_scaled.safetensors
+      - README.md
+    category: image
+    tags: [core, image, tier-8gb, tier-16gb, tier-24gb]
+    license: other
+    gated: false
+    approx_bytes: 5242473486
+    enabled: true
+    notes: Qwen3-VL-4B text encoder for Krea 2 (~5.2 GB).
+
+  - id: qwen-image-vae
+    hf_repo: Comfy-Org/Krea-2
+    include:
+      - vae/qwen_image_vae.safetensors
+    category: image
+    tags: [core, image, tier-8gb, tier-16gb, tier-24gb]
+    license: other
+    gated: false
+    approx_bytes: 253806246
+    enabled: true
+    notes: Qwen-Image VAE, as repackaged for Krea 2 by Comfy-Org.
+
+  # ---- Chroma1-HD (uncensored)
+  - id: chroma1-hd-q4km
+    hf_repo: silveroxides/Chroma1-HD-GGUF
+    include:
+      - Chroma1-HD-Q4_K_M.gguf
+      - README.md
+    category: image
+    tags: [core, image, uncensored, tier-8gb]
+    license: apache-2.0
+    gated: false
+    approx_bytes: 5566541875
+    enabled: true
+    notes: Uncensored FLUX.1-schnell derivative. Needs t5xxl-fp16 and flux1-ae.
+
+  - id: chroma1-hd-q8
+    hf_repo: silveroxides/Chroma1-HD-GGUF
+    include:
+      - Chroma1-HD-Q8_0.gguf
+      - README.md
+    category: image
+    tags: [core, image, uncensored, tier-16gb, tier-24gb]
+    license: apache-2.0
+    gated: false
+    approx_bytes: 9735417907
+    enabled: true
+    notes: Q8_0 copy. Needs t5xxl-fp16 and flux1-ae.
+
+  # ---- MiniMax-H3-Image
+  - id: minimax-h3-image-q2k
+    hf_repo: Abiray/MiniMax-H3-Image-GGUF
+    include:
+      - MiniMax-H3-Image-Pruned-Q2_K.gguf
+      - image_minimax_h3_image_t2i_gguf.json
+      - minimax_h3_image_gguf_fix.py
+      - LICENSE
+      - NOTICE
+      - README.md
+    category: image
+    tags: [core, image, tier-8gb]
+    license: other
+    gated: false
+    approx_bytes: 6876748423
+    enabled: true
+    notes: >-
+      Pruned model at Q2_K: runs on 8 GB, slowly and with visible loss.
+      Needs minimax-h3-encoder-q4km (kept in RAM) and minimax-h3-image-vae.
+      The licence excludes the EU, UK, KR and US.
+
+  - id: minimax-h3-image-q4km
+    hf_repo: Hearthscale/MiniMax-H3-Image-GGUF
+    include:
+      - minimax_h3_image_pruned-Q4_K_M.gguf
+      - LICENSE
+      - README.md
+    category: image
+    tags: [core, image, tier-16gb]
+    license: other
+    gated: false
+    approx_bytes: 11429613927
+    enabled: true
+    notes: Needs minimax-h3-encoder-q4km and minimax-h3-image-vae.
+
+  - id: minimax-h3-image-q8
+    hf_repo: Hearthscale/MiniMax-H3-Image-GGUF
+    include:
+      - minimax_h3_image_pruned-Q8_0.gguf
+      - LICENSE
+      - README.md
+    category: image
+    tags: [core, image, tier-24gb]
+    license: other
+    gated: false
+    approx_bytes: 21447241575
+    enabled: true
+    notes: >-
+      Needs minimax-h3-image-vae and a text encoder: minimax-h3-encoder-q4km,
+      or minimax-h3-encoder-int8 on 24 GB.
+
+  - id: minimax-h3-encoder-q4km
+    hf_repo: leejet/MiniMax-H3-GGUF
+    include:
+      - qwen3vl_32b_minimax_h3-Q4_K_M.gguf
+      - README.md
+    category: image
+    tags: [core, image, tier-8gb, tier-16gb, tier-24gb]
+    license: unknown
+    gated: false
+    approx_bytes: 18218066400
+    enabled: true
+    notes: >-
+      Qwen3-VL-32B text encoder for MiniMax-H3-Image (~18 GB, runs from
+      system RAM). The Hub reports no licence for this repo.
+
+  - id: minimax-h3-encoder-int8
+    hf_repo: Comfy-Org/MiniMax-H3-Image
+    include:
+      - text_encoders/qwen3vl_32b_minimax_h3_int8_convrot.safetensors
+    category: image
+    tags: [extended, image, tier-24gb]
+    license: other
+    gated: false
+    approx_bytes: 27141342152
+    enabled: true
+    notes: Higher-quality int8 encoder for MiniMax-H3-Image on 24 GB.
+
+  - id: minimax-h3-image-vae
+    hf_repo: Comfy-Org/MiniMax-H3-Image
+    include:
+      - vae/minimax_h3_image_vae_fp16.safetensors
+      - README.md
+    category: image
+    tags: [core, image, tier-8gb, tier-16gb, tier-24gb]
+    license: other
+    gated: false
+    approx_bytes: 1168508374
+    enabled: true
+    notes: VAE for MiniMax-H3-Image.
+
+  # ---- FLUX.2 dev 32B
+  - id: flux2-dev-q4km
+    hf_repo: city96/FLUX.2-dev-gguf
+    include:
+      - flux2-dev-Q4_K_M.gguf
+      - LICENSE.txt
+      - README.md
+    category: image
+    tags: [core, image, tier-24gb]
+    license: other
+    gated: false
+    approx_bytes: 20082435432
+    enabled: true
+    notes: Needs flux2-dev-mistral-fp8 and flux2-vae.
+
+  - id: flux2-dev-q8
+    hf_repo: city96/FLUX.2-dev-gguf
+    include:
+      - flux2-dev-Q8_0.gguf
+      - LICENSE.txt
+      - README.md
+    category: image
+    tags: [extended, image, tier-24gb]
+    license: other
+    gated: false
+    approx_bytes: 35002623336
+    enabled: true
+    notes: >-
+      35 GB: needs a 32 GB+ card. Pair with flux2-dev-mistral-bf16 and
+      flux2-vae.
+
+  - id: flux2-dev-mistral-fp8
+    hf_repo: Comfy-Org/Flux-2-Dev
+    include:
+      - split_files/text_encoders/mistral_3_small_flux2_fp8.safetensors
+      - README.md
+    category: image
+    tags: [core, image, tier-24gb]
+    license: other
+    gated: false
+    approx_bytes: 18034643949
+    enabled: true
+    notes: Mistral-Small-3.2 text encoder for FLUX.2 dev, fp8.
+
+  - id: flux2-dev-mistral-bf16
+    hf_repo: Comfy-Org/Flux-2-Dev
+    include:
+      - split_files/text_encoders/mistral_3_small_flux2_bf16.safetensors
+      - README.md
+    category: image
+    tags: [extended, image, tier-24gb]
+    license: other
+    gated: false
+    approx_bytes: 35584901301
+    enabled: true
+    notes: bf16 text encoder to pair with flux2-dev-q8 (32 GB+ card).
+
+  # ---- FLUX.1 Kontext dev
+  - id: flux1-kontext-dev-q4km
+    hf_repo: QuantStack/FLUX.1-Kontext-dev-GGUF
+    include:
+      - flux1-kontext-dev-Q4_K_M.gguf
+      - LICENSE.md
+      - README.md
+    category: image
+    tags: [extended, image, tier-8gb]
+    license: other
+    gated: false
+    approx_bytes: 6931837088
+    enabled: true
+    notes: Image editing. Needs t5xxl-fp16, flux1-clip-l and flux1-ae.
+
+  - id: flux1-kontext-dev-q8
+    hf_repo: QuantStack/FLUX.1-Kontext-dev-GGUF
+    include:
+      - flux1-kontext-dev-Q8_0.gguf
+      - LICENSE.md
+      - README.md
+    category: image
+    tags: [extended, image, tier-16gb, tier-24gb]
+    license: other
+    gated: false
+    approx_bytes: 12714471584
+    enabled: true
+    notes: Q8_0 copy. Needs t5xxl-fp16, flux1-clip-l and flux1-ae.
+
+  # ================================================================ video
+
+  # ---- LTX-2.5 (22B, video + audio)
+  - id: ltx-2.5-distilled-ud-q4kxl
+    hf_repo: unsloth/LTX-2.5-GGUF
+    include:
+      - distilled/ltx-2.5-22b-distilled-UD-Q4_K_XL.gguf
+      - LICENSE
+      - NOTICE
+      - README.md
+    category: video
+    tags: [core, video, tier-16gb]
+    license: other
+    gated: false
+    approx_bytes: 14000299892
+    enabled: true
+    notes: >-
+      Distilled model. Needs ltx-2.5-gemma4-encoder, ltx-2.5-vae and
+      ltx-2.5-upscaler-x2. Untested and slow on 8 GB.
+
+  - id: ltx-2.5-distilled-q8
+    hf_repo: unsloth/LTX-2.5-GGUF
+    include:
+      - distilled/ltx-2.5-22b-distilled-Q8_0.gguf
+      - LICENSE
+      - NOTICE
+      - README.md
+    category: video
+    tags: [core, video, tier-24gb]
+    license: other
+    gated: false
+    approx_bytes: 22779731828
+    enabled: true
+    notes: Q8_0 copy of the distilled model. Same components.
+
+  - id: ltx-2.5-gemma4-encoder
+    hf_repo: unsloth/LTX-2.5-GGUF
+    include:
+      - text_encoders/gemma4-12b-with-proj-ltx-2.5-bf16.safetensors
+    category: video
+    tags: [core, video, tier-16gb, tier-24gb]
+    license: other
+    gated: false
+    approx_bytes: 26263858182
+    enabled: true
+    notes: >-
+      Gemma 4 12B text encoder with projection, bf16. Same file as in
+      Lightricks/LTX-2.5, which is gated; unsloth's copy is not.
+
+  - id: ltx-2.5-vae
+    hf_repo: unsloth/LTX-2.5-GGUF
+    include:
+      - vae/*
+    category: video
+    tags: [core, video, tier-16gb, tier-24gb]
+    license: other
+    gated: false
+    approx_bytes: 1817136462
+    enabled: true
+    notes: Video VAE (conv variant) and audio VAE for LTX-2.5.
+
+  - id: ltx-2.5-upscaler-x2
+    hf_repo: unsloth/LTX-2.5-GGUF
+    include:
+      - latent_upscale_models/ltx-2.5-latent-spatial-upscaler-x2-bf16-1.0.safetensors
+    category: video
+    tags: [core, video, tier-16gb, tier-24gb]
+    license: other
+    gated: false
+    approx_bytes: 995778752
+    enabled: true
+    notes: x2 spatial latent upscaler for LTX-2.5.
+
+  # ---- Wan 2.2 A14B (image-to-video + text-to-video)
+  - id: wan2.2-i2v-a14b-q4km
+    hf_repo: QuantStack/Wan2.2-I2V-A14B-GGUF
+    include:
+      - HighNoise/Wan2.2-I2V-A14B-HighNoise-Q4_K_M.gguf
+      - LowNoise/Wan2.2-I2V-A14B-LowNoise-Q4_K_M.gguf
+      - README.md
+    category: video
+    tags: [extended, video, tier-16gb, tier-24gb]
+    license: apache-2.0
+    gated: false
+    approx_bytes: 19303458409
+    enabled: true
+    notes: High-noise + low-noise experts. Needs wan-umt5-xxl-fp8 and wan2.1-vae.
+
+  - id: wan2.2-t2v-a14b-q4km
+    hf_repo: QuantStack/Wan2.2-T2V-A14B-GGUF
+    include:
+      - HighNoise/Wan2.2-T2V-A14B-HighNoise-Q4_K_M.gguf
+      - LowNoise/Wan2.2-T2V-A14B-LowNoise-Q4_K_M.gguf
+      - README.md
+    category: video
+    tags: [extended, video, tier-16gb, tier-24gb]
+    license: apache-2.0
+    gated: false
+    approx_bytes: 19300181599
+    enabled: true
+    notes: High-noise + low-noise experts. Needs wan-umt5-xxl-fp8 and wan2.1-vae.
+
+  - id: wan-umt5-xxl-fp8
+    hf_repo: Comfy-Org/Wan-2.2
+    include:
+      - split_files/text_encoders/umt5_xxl_fp8_e4m3fn_scaled.safetensors
+      - README.md
+    category: video
+    tags: [extended, video, tier-16gb, tier-24gb]
+    license: apache-2.0
+    gated: false
+    approx_bytes: 6735912873
+    enabled: true
+    notes: UMT5-XXL text encoder shared by the Wan 2.x models.
+
+  - id: wan2.1-vae
+    hf_repo: Comfy-Org/Wan-2.2
+    include:
+      - split_files/vae/wan_2.1_vae.safetensors
+    category: video
+    tags: [extended, video, tier-16gb, tier-24gb]
+    license: apache-2.0
+    gated: false
+    approx_bytes: 253815318
+    enabled: true
+    notes: Wan 2.1 VAE, used by the Wan 2.2 A14B models.
+
+  # ===================================== abliterated text encoders
+  # The encoder only stops prompt refusals; the diffusion model still has
+  # to know the concept.
+
+  - id: qwen3-vl-8b-abliterated-encoder
+    hf_repo: Aragduhl/Huihui-Qwen3-VL-8B-Instruct-abliterated-comfy
+    category: image
+    tags: [extended, image, uncensored, tier-8gb, tier-16gb, tier-24gb]
+    license: apache-2.0
+    gated: false
+    approx_bytes: 17534343245
+    enabled: true
+    notes: >-
+      Abliterated Qwen3-VL-8B for the Qwen3-VL-8B encoder family (bf16,
+      ~17.5 GB, runs from RAM). Not confirmed to work with Qwen-Image-2.1.
+
+  - id: qwen3-vl-4b-heretic-encoder
+    hf_repo: DreamFast/Qwen3-VL-4b-Heretic-ComfyUI
+    include:
+      - qwen3-vl-4b-heretic_fp8_e4m3fn.safetensors
+      - README.md
+    category: image
+    tags: [extended, image, uncensored, tier-8gb, tier-16gb, tier-24gb]
+    license: apache-2.0
+    gated: false
+    approx_bytes: 4831501184
+    enabled: true
+    notes: >-
+      Heretic Qwen3-VL-4B, drop-in for Krea 2's fp8 encoder. The repo also
+      has bf16 (8.9 GB), int8, int4, mxfp8 and nvfp4 variants.
+
+  - id: gemma-3-12b-heretic-ltx-encoder
+    hf_repo: anongecko/gemma-3-12b-it-heretic-ltx
+    include:
+      - gemma-3-12b-it-heretic-bf16-comfy.safetensors
+      - README.md
+    category: video
+    tags: [extended, video, uncensored, tier-16gb, tier-24gb]
+    license: unknown
+    gated: false
+    approx_bytes: 24379482710
+    enabled: true
+    notes: >-
+      Heretic Gemma 3 12B encoder for LTX-2.3 only: LTX-2.5 uses a Gemma 4
+      encoder. The Hub reports no licence for this repo.
