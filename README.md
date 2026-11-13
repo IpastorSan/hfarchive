@@ -1,16 +1,53 @@
 # hfarchive
 
-Archive a list of Hugging Face models onto a drive and keep it updated.
+`hfarchive` copies open-weight models from Hugging Face onto a drive you own,
+together with what you need to run them later, and checks that copy for
+damage.
 
-You describe the models in a YAML file: which repos, which files, which folder
-they go in. `hfarchive` checks them against the Hub, tells you how much space
-the selection needs, refuses runs that would not fit or that would land on
-your system disk, and then downloads with the official `hf download` CLI. Runs
-resume where they stopped, and every run is recorded in a manifest on the
-drive.
+## Why
 
-It is a single Python file. [uv](https://docs.astral.sh/uv/) installs its two
-dependencies (`huggingface_hub`, `PyYAML`) on first run.
+Open-weight models can disappear from Hugging Face. Repos get deleted, gated,
+relicensed or renamed, and the Hub itself can be unreachable. A copy of the
+weights alone is not enough to run a model years later. You also need a
+version of the runtime that supports it, the workflows that wire it up, and
+the settings it was meant to run with.
+
+## What it does
+
+From one YAML file, `hfarchive`:
+
+- downloads the weights, only the files you choose (one quant out of the
+  dozens a GGUF repo ships), with the official `hf download` CLI;
+- always keeps the model card (`README.md`) and `LICENSE` files;
+- writes your usage notes for each model to a `USAGE.md` next to the weights,
+  and downloads the workflow files you list, such as ComfyUI workflow JSONs;
+- archives pinned runtimes (llama.cpp, ComfyUI, custom nodes) as full git
+  history bundles, source tarballs and GitHub release builds;
+- writes an `INDEX.md` at the drive root that you can read without the tool;
+- records every file's size and hash in a manifest, so `--check` can show
+  years later that nothing has rotted.
+
+Before it downloads anything it checks the repos against the Hub, tells you
+how much space the selection needs, and refuses runs that would not fit or
+that would land on your system disk. Runs resume where they stopped.
+
+It is not a model runner. It does not sync or mirror whole repos. It does not
+replace the Hugging Face cache: it writes plain folders you point a runtime
+at.
+
+## Hardware tiers
+
+The default selection tags each model with the tiers it runs on in practice:
+
+| Tag | GPU | System RAM |
+|---|---|---|
+| `tier-8gb` | 8 GB VRAM, possibly older than Ampere | about 128 GB; large MoE models keep their experts in RAM |
+| `tier-16gb` | 16 GB VRAM | 64 to 128 GB |
+| `tier-24gb` | 24 GB VRAM (a few entries need 32 GB) | 128 GB |
+
+[`docs/models-2026-11.md`](docs/models-2026-11.md) covers each model in the
+selection, with benchmarks and a comparison with current closed frontier
+models.
 
 ## Install
 
@@ -20,8 +57,10 @@ chmod +x hfarchive
 ./hfarchive --help
 ```
 
-Requires `uv` and Linux or macOS. Put the file anywhere on your `PATH` if you
-want to call it as `hfarchive`.
+It is a single Python file. [uv](https://docs.astral.sh/uv/) installs its two
+dependencies (`huggingface_hub`, `PyYAML`) on first run. It needs Linux or
+macOS, and `git` if you archive runtimes. Put the file anywhere on your `PATH`
+to call it as `hfarchive`.
 
 Without uv, install the dependencies yourself and run it with Python 3.11+:
 `pip install huggingface_hub pyyaml && python3 hfarchive --help`.
@@ -29,12 +68,18 @@ Without uv, install the dependencies yourself and run it with Python 3.11+:
 ## Quickstart
 
 ```bash
-hfarchive --init                          # writes a commented ./models.yaml
-hfarchive --list                          # what the config selects (offline)
-hfarchive --verify-only                   # do the repos exist on the Hub?
-hfarchive --dry-run --dest /mnt/backup    # sizes, target paths; writes nothing
-hfarchive --dest /mnt/backup              # download
+./hfarchive --init                          # writes ./models.yaml
+$EDITOR models.yaml                         # trim it to what you want
+./hfarchive --dry-run --dest /mnt/backup    # sizes, target paths; writes nothing
+./hfarchive --dest /mnt/backup              # download
+./hfarchive --check --dest /mnt/backup      # later: is everything still intact?
 ```
+
+`--init` writes the default selection: a curated set of open models (LLMs,
+image and video models, security, uncensored and decision models) chosen for
+the 8, 16 and 24 GB VRAM tiers above, dated November 2026. Its `core` profile
+is about 880 GB; everything is about 2.2 TB. Trim it, select a smaller
+profile, or start from a small commented file with `--init --minimal`.
 
 Set the destination once instead of passing `--dest` every time:
 
@@ -49,15 +94,22 @@ partial ones, so a long archive can run over several sessions.
 
 | Flag | Effect |
 |---|---|
-| `--init` | Write a starter config at `--config` (default `./models.yaml`). Never overwrites. |
-| `--list` | Print the selected entries and their recorded sizes. No network. |
+| `--init` | Write the curated selection to `--config` (default `./models.yaml`). Never overwrites. |
+| `--init --minimal` | Write a small commented starter instead. |
+| `--list` | Print the selected models, runtimes and workflows. No network. |
 | `--verify-only` | Check every selected repo on the Hub. Downloads nothing. |
-| `--dry-run` | Resolve live sizes, matched files and target paths. Writes nothing. |
+| `--dry-run` | Resolve live sizes, matched files, runtime commits, release assets and workflow sizes. Writes nothing. |
 | *(none of the above)* | Download. |
 | `--refresh-sizes` | Measure each selected repo and write `approx_bytes` back into the config, keeping comments. |
+| `--check` | Recompute every archived file's hash and compare it with the manifest. Needs `--dest`, no config, no network. |
+| `--check --fast` | Compare sizes only. Takes seconds. |
 
-Add `--json` to `--list`, `--verify-only` and `--dry-run` for machine-readable
-output.
+Add `--json` to `--list`, `--verify-only`, `--dry-run` and `--check` for
+machine-readable output.
+
+Without `--config`, `hfarchive` reads `./models.yaml`. If that file is
+missing and the script runs from a clone of this repo, it uses
+`examples/archive-2026-11.yaml` and says so.
 
 ### Selection
 
@@ -68,6 +120,7 @@ output.
 --exclude kimi-k3                  # drop these ids
 --enable qwen2.5-coder-7b-gguf     # force in an entry with enabled: false
 --category ocr,embeddings          # keep only these categories
+--no-runtimes                      # skip runtimes
 ```
 
 Without `--profile`, the config's `default_profile` is used. If it has none,
@@ -100,7 +153,7 @@ models:
   - id: qwen2.5-coder-7b-gguf
     hf_repo: Qwen/Qwen2.5-Coder-7B-Instruct-GGUF
     revision: main
-    include: ["*-q4_k_m.gguf", README.md]
+    include: ["*-q4_k_m.gguf"]
     exclude: []
     category: coding
     tags: [coding, gguf, small]
@@ -109,6 +162,22 @@ models:
     approx_bytes: 4683079206
     enabled: true
     notes: One quant out of the dozen the repo ships.
+    usage:
+      runtime: llama.cpp
+      notes: |
+        llama-cli -m qwen2.5-coder-7b-instruct-q4_k_m.gguf -c 8192 --temp 0.7
+      workflows:
+        - name: t2i-basic.json
+          url: https://raw.githubusercontent.com/<org>/<repo>/<commit>/t2i-basic.json
+
+runtimes:
+  - id: llama.cpp
+    git: https://github.com/ggml-org/llama.cpp
+    ref: b6100
+    release_assets: ["*ubuntu-x64*"]
+    tags: [llm]
+    enabled: true
+    notes: CPU build; build from source for CUDA.
 ```
 
 Every top-level section is optional except `models`.
@@ -127,18 +196,70 @@ Every top-level section is optional except `models`.
 | `approx_bytes` | | Size of the matched files. Written by `--refresh-sizes`, shown by `--list`. |
 | `enabled` | | `false` keeps the entry out unless a profile has `include_disabled: true` or you pass `--enable`. Default `true`. |
 | `notes` | | Free text. |
+| `usage.runtime` | | What runs the model. Free text; when it matches a `runtimes[].id`, that runtime is archived with the model. |
+| `usage.notes` | | Recommended settings: temperature, sampler and steps, CLI flags. Written to `USAGE.md`. |
+| `usage.workflows` | | List of `{name, url}`. Each URL is downloaded to `_workflows/<name>` in the model's folder. Pin URLs to a commit. |
+
+`README.md` and `LICENSE*` at the repo root are always downloaded, even when
+`include` or `exclude` would leave them out.
+
+| Runtime field | Required | Meaning |
+|---|:-:|---|
+| `id` | yes | Folder name under `_runtimes/`. Must be unique. |
+| `git` | yes | Git URL. |
+| `ref` | | Tag, branch or commit to archive. Default: the remote's `HEAD`. The resolved commit is recorded. |
+| `release_assets` | | Globs over the asset names of the GitHub release tagged `ref`. Needs a `github.com` URL and a tag. |
+| `tags` | | Labels that profiles select on. |
+| `enabled` | | `false` keeps the runtime out unless the profile has `include_disabled: true`. |
+| `notes` | | Free text. |
 
 Unknown keys are rejected, so a typo fails loudly instead of being ignored.
 
 A profile matches an entry if any of its rules match: `all`, `ids`, `all_tags`
-or `any_tags`.
+or `any_tags`. A profile includes the runtimes its selected models name in
+`usage.runtime`, plus the runtimes its rules match. With `--only` or
+`--category`, only the runtimes the chosen models name are included.
 
 **Globs** follow the Hub's `fnmatch` rules, where `*` also crosses `/`:
 `*.safetensors` matches `transformer/x.safetensors` too. To exclude one file at
 the repo root, name it exactly.
 
 **GGUF repos** usually ship every quantization, often hundreds of GB in total.
-Pin the one you want with `include`.
+Pin the one you want with `include`. Unsloth repos also keep stub copies of
+the first shard under `Shard_Rewrite/`, so pin sharded quants by folder
+(`UD-IQ1_S/*`), not with `*UD-IQ1_S*`.
+
+## Runtimes
+
+Each runtime is archived in `$DEST/_runtimes/<id>/`:
+
+| File | What it is |
+|---|---|
+| `mirror.git/` | A bare mirror of the upstream branches and tags, updated on each run. |
+| `<id>-<sha>.bundle` | A `git bundle` of the whole history, one file. `git clone <id>-<sha>.bundle src && git -C src checkout <sha>` restores it anywhere. |
+| `<id>-<ref>-src.tar.gz` | A plain source tree of `ref`, for when git is not at hand. Submodules are not included. |
+| `release-<ref>/` | The release assets that match `release_assets`, checked against the size GitHub publishes and, when it publishes one, the sha256. |
+
+A runtime whose `ref` still resolves to the archived commit is skipped. The
+GitHub API is used for release assets. `hfarchive` uses `GITHUB_TOKEN` or the
+token from `gh auth token` if there is one. Without a token, GitHub allows 60
+requests per hour, and a run that hits the limit says so.
+
+## Checking an archive
+
+Each successful download records, in the manifest, every file's path and size
+and the hash the Hub publishes for it: sha256 for LFS files (the weights), the
+git blob sha1 for the rest. Runtime files and workflows get a sha256.
+
+```bash
+hfarchive --check --dest /mnt/backup          # rehash everything
+hfarchive --check --dest /mnt/backup --fast   # sizes only
+```
+
+`--check` reads only the drive. It reports each file that is missing, has the
+wrong size or has the wrong hash, and exits 1 if it found any. Large files
+show progress while they are hashed. Without `hfarchive`, `sha256sum <file>`
+and `git hash-object <file>` compute the same values the manifest holds.
 
 ## Guards
 
@@ -175,9 +296,21 @@ run continues. Tokens are never printed or written to logs or the manifest.
 
 ```
 /mnt/backup/
-├── text-llm/openai/gpt-oss-120b/
-├── coding/Qwen/Qwen2.5-Coder-7B-Instruct-GGUF/
-├── embeddings/Qwen/Qwen3-Embedding-0.6B/
+├── INDEX.md                              what is here, readable without hfarchive
+├── llm/unsloth/Qwen3.8-Flash-Next-GGUF/
+│   ├── UD-Q3_K_XL/…                       the weights, as in the repo
+│   ├── README.md                          the model card
+│   └── USAGE.md                           runtime, settings, workflows
+├── image/black-forest-labs/FLUX.2-dev/
+│   ├── …
+│   ├── USAGE.md
+│   └── _workflows/t2i-basic.json
+├── _runtimes/
+│   └── llama.cpp/
+│       ├── mirror.git/
+│       ├── llama.cpp-<sha>.bundle
+│       ├── llama.cpp-b6100-src.tar.gz
+│       └── release-b6100/…
 └── _hfarchive/
     ├── manifest.jsonl
     └── logs/
@@ -185,23 +318,43 @@ run continues. Tokens are never printed or written to logs or the manifest.
 
 Each model lives at `<dest>/<category>/<org>/<repo>/` as a plain snapshot of
 the repo, so llama.cpp, ComfyUI or `from_pretrained()` can load it directly.
+When several entries pin different files of one repo, they share its folder
+and one `USAGE.md` with a section per entry.
 
-`manifest.jsonl` gets one line per repo per download run: id, repo, commit,
-status, matched files and bytes, licence and timestamp. It is append-only.
+`INDEX.md` is rewritten after every download run, even when everything was
+already current. It lists every
+archived model by category with its repo, revision and commit, size, runtime,
+`USAGE.md` and workflows, and every runtime with its ref and commit. It
+covers everything in the manifest, not only the current config.
+
+`manifest.jsonl` is append-only. It gets one line per model and per runtime
+per run: id, repo, commit, status, sizes, licence, timestamp, and the file
+hashes `--check` uses.
 
 Run logs are written to `${XDG_STATE_HOME:-~/.local/state}/hfarchive/logs/`
 and copied to `_hfarchive/logs/` after any run that downloaded something.
+
+## Keeping an archive healthy
+
+- Run `hfarchive --verify-only` on a schedule, for example a weekly cron job.
+  It exits 1 when a repo has been removed or renamed upstream, which is when
+  your copy becomes the only one.
+- Run `hfarchive --check` every few months, and `--check --fast` whenever you
+  plug the drive in. Disks lose data silently.
+- Keep a second copy on another drive, ideally in another place. `--check`
+  tells you a file is damaged; only a second copy gets it back.
+- Prefer a filesystem that checksums data, such as btrfs or ZFS. Run
+  `btrfs scrub start /mnt/backup` (or `zpool scrub`) periodically; with two
+  copies in a btrfs RAID1 it also repairs what it finds.
 
 ## Exit codes
 
 | Code | Meaning |
 |---:|---|
-| 0 | Success, or a clean dry run |
-| 1 | A download failed, `--verify-only` found a missing repo, or `--refresh-sizes` could not measure a repo |
-| 2 | Config error, empty selection, bad destination, or not enough space |
+| 0 | Success, a clean dry run, or a clean `--check` |
+| 1 | A model, runtime or workflow download failed (the rest of the run completes); `--verify-only` found a missing repo; `--refresh-sizes` could not measure a repo; `--check` found a missing or damaged file |
+| 2 | Config error, empty selection, bad destination, not enough space, or `--check` without a destination or manifest |
 | 3 | Refused: an entry is at or above the large-repo threshold |
-
-`--verify-only` works as a cron job to notice repos that disappear upstream.
 
 ## Environment
 
@@ -210,6 +363,7 @@ and copied to `_hfarchive/logs/` after any run that downloaded something.
 | `HFARCHIVE_DEST` | Default for `--dest`. |
 | `HFARCHIVE_HF_BIN` | Path to an `hf` binary, used when the script's own environment has none. |
 | `HF_TOKEN` | Hub token, if you prefer it to `hf auth login`. |
+| `GITHUB_TOKEN` | GitHub token for release assets, if you prefer it to `gh auth login`. |
 
 `hfarchive` uses the `hf` CLI from its own environment, then
 `$HFARCHIVE_HF_BIN`, then the first `hf` on your `PATH`.
@@ -218,6 +372,8 @@ and copied to `_hfarchive/logs/` after any run that downloaded something.
 
 [`examples/`](examples/) holds complete configs you can run or copy from:
 
+- [`archive-2026-11.yaml`](examples/archive-2026-11.yaml): the default
+  selection `--init` writes, described above.
 - [`tweet-2026-09.yaml`](examples/tweet-2026-09.yaml): 52 open-weights models
   from a list shared in September 2026 (text, coding, image, video, speech,
   music, OCR, embeddings), about 5.9 TB, with smaller profiles for GGUF-only,
@@ -228,7 +384,7 @@ hfarchive --config examples/tweet-2026-09.yaml --list --profile tweet-gguf
 ```
 
 To split an archive across two drives, run twice with different `--category`
-lists. Each drive keeps its own manifest.
+lists. Each drive keeps its own manifest and index.
 
 ## Troubleshooting
 
@@ -244,14 +400,23 @@ skipped, partial ones resume.
 **Slow transfers**: try `--jobs 1 --max-workers 4`. USB drives are usually the
 bottleneck, not the network.
 
+**"GitHub API rate limit reached"**: set `GITHUB_TOKEN` or run `gh auth login`,
+or wait an hour.
+
+**`--check` reports a damaged file**: delete it and run the download again
+(`--only <id>` for a model). Missing model files, runtime files and workflows
+are all fetched again.
+
 ## Development
 
 ```bash
-uv run --with pytest --with huggingface_hub --with pyyaml pytest -q
+uv run --no-project --with pytest --with huggingface_hub --with pyyaml pytest -q
 ```
 
-The tests download one ~2 KB `config.json` to exercise `hf download`; they never
-download model weights. Network tests are skipped when offline.
+The tests download one ~2 KB `config.json` and a model card to exercise
+`hf download`; they never download model weights. Network tests are skipped
+when offline. Runtimes are tested against a local git repository, with GitHub
+mocked.
 
 ## License
 
