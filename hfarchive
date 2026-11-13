@@ -1725,11 +1725,26 @@ def build_resolve_command(uv: str, w: Wheels, platform_tag: str, inputs: list[Pa
             *index_args(w), "-o", str(output), *map(str, inputs)]
 
 
+def compatible_platforms(platform_tag: str) -> list[str]:
+    """The tags a wheel may carry and still install on `platform_tag`. pip
+    download matches --platform exactly, while uv resolves for every older
+    manylinux too, so a manylinux_2_28 set can pin a manylinux_2_17 wheel."""
+    m = re.fullmatch(r"manylinux_2_(\d+)_(\w+)", platform_tag)
+    if not m:
+        return [platform_tag]
+    minor, arch = int(m.group(1)), m.group(2)
+    tags = [f"manylinux_2_{v}_{arch}" for v in range(minor, 4, -1)]
+    legacy = {17: "manylinux2014", 12: "manylinux2010", 5: "manylinux1"}
+    tags += [f"{name}_{arch}" for v, name in legacy.items() if v <= minor]
+    return tags
+
+
 def build_download_command(pip: list[str], w: Wheels, platform_tag: str, resolved: Path,
                            wheelhouse: Path) -> list[str]:
     """`pip download` of the resolved set, one file per pin."""
+    platforms = [a for tag in compatible_platforms(platform_tag) for a in ("--platform", tag)]
     return [*pip, "download", "--no-deps", "--only-binary=:all:", "--implementation", "cp",
-            "--python-version", w.python, "--platform", platform_tag,
+            "--python-version", w.python, *platforms,
             "--disable-pip-version-check", "--progress-bar", "off",
             "-d", str(wheelhouse), *index_args(w), "-r", str(resolved)]
 
@@ -1842,6 +1857,20 @@ def download_wheelhouse(rt: Runtime, w: Wheels, platform_tag: str, inputs: list[
     wheelhouse.mkdir(parents=True, exist_ok=True)
     log.info("%s: downloading %d wheels for %s...", rt.id, len(pins), platform_tag)
     rc, out = run_tool(build_download_command(pip, w, platform_tag, resolved, wheelhouse))
+    if rc != 0:  # pip stops at the first pin it cannot fetch; fetch the rest one by one
+        have = {wheel_name_version(f.name)[0] for f in wheelhouse.glob("*.whl")}
+
+        def one(item: tuple[str, str]) -> tuple[int, str]:
+            name, version = item
+            single = tmp / f"pin-{platform_tag}-{name}.txt"
+            single.write_text(f"{name}=={version}\n", encoding="utf-8")
+            return run_tool(build_download_command(pip, w, platform_tag, single, wheelhouse))
+
+        todo = [(n, v) for n, v in pins.items() if n not in have]
+        with cf.ThreadPoolExecutor(max_workers=8) as ex:
+            failures = [o for r, o in ex.map(one, todo) if r != 0]
+        out = failures[0] if failures else out
+        rc = 1 if failures else 0
     files: dict[str, Path] = {}
     for whl in sorted(wheelhouse.glob("*.whl")):
         name, version = wheel_name_version(whl.name)

@@ -1550,7 +1550,7 @@ def test_requirement_specs_follow_includes(tmp_path):
 AVAILABLE = {"click": "8.1.7", "colorama": "0.4.6", "numpy": "2.5.4"}
 
 
-def fake_run_tool(calls, fail_download=()):
+def fake_run_tool(calls, fail_download=(), abort_batch=False):
     """uv pip compile and pip download against AVAILABLE; Windows adds colorama,
     as click's `platform_system == "Windows"` marker does."""
     def run(cmd):
@@ -1568,7 +1568,10 @@ def fake_run_tool(calls, fail_download=()):
             return 0, ""
         assert cmd[:2] == ["pip", "download"], cmd
         d = Path(cmd[cmd.index("-d") + 1])
-        for name, ver in hfa.read_pins(Path(cmd[cmd.index("-r") + 1])).items():
+        pins = hfa.read_pins(Path(cmd[cmd.index("-r") + 1]))
+        if abort_batch and fail_download & set(pins):  # real pip stops at the first failure
+            return 1, "ERROR: No matching distribution found"
+        for name, ver in pins.items():
             if name not in fail_download:
                 (d / f"{name}-{ver}-py3-none-any.whl").write_bytes(f"{name} {ver}".encode())
         return (1, "ERROR: connection reset") if fail_download else (0, "")
@@ -1820,3 +1823,25 @@ def test_selection_flags_accept_repeats_and_commas():
     assert hfa.csv_list([]) == []
     args = hfa.build_parser().parse_args(["--only", "a,b", "--only", "c"])
     assert hfa.csv_list(args.only) == ["a", "b", "c"]
+
+
+def test_compatible_platforms_cover_older_manylinux():
+    tags = hfa.compatible_platforms("manylinux_2_28_x86_64")
+    assert tags[0] == "manylinux_2_28_x86_64" and "manylinux_2_17_x86_64" in tags
+    assert "manylinux2014_x86_64" in tags and "manylinux_2_29_x86_64" not in tags
+    assert hfa.compatible_platforms("win_amd64") == ["win_amd64"]
+    cmd = hfa.build_download_command(["pip"], hfa.Wheels.parse("app", WHEELS_OK), "manylinux_2_28_x86_64",
+                                     Path("lock"), Path("whl"))
+    assert cmd.count("--platform") == len(tags)
+
+
+def test_one_unavailable_pin_does_not_empty_the_wheelhouse(tmp_path, wheels_env, monkeypatch):
+    dest, calls = wheels_env
+    up = make_python_upstream(tmp_path, "click\n")
+    monkeypatch.setattr(hfa, "run_tool",
+                        fake_run_tool(calls, fail_download={"numpy"}, abort_batch=True))
+    res = hfa.archive_runtime(hfa.probe_runtime(python_runtime(up), dest, {}), dest)
+    plat = res.wheels["platforms"]["manylinux_2_28_x86_64"]
+    assert plat["status"] == "partial" and plat["missing"] == ["numpy"]
+    names = {a["path"].rsplit("/", 1)[-1] for a in plat["artifacts"]}
+    assert "click-8.1.7-py3-none-any.whl" in names
