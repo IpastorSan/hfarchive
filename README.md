@@ -22,7 +22,9 @@ From one YAML file, `hfarchive`:
 - writes your usage notes for each model to a `USAGE.md` next to the weights,
   and downloads the workflow files you list, such as ComfyUI workflow JSONs;
 - archives pinned runtimes (llama.cpp, ComfyUI, custom nodes) as full git
-  history bundles, source tarballs and GitHub release builds;
+  history bundles, source tarballs and GitHub release builds, and the Python
+  dependencies of Python runtimes (PyTorch with CUDA included) as wheels, so
+  they install with no network;
 - writes an `INDEX.md` at the drive root that you can read without the tool;
 - puts each model's benchmarks, the selection's models guide and the config
   used on the drive, so the archive explains what it holds and why;
@@ -61,8 +63,8 @@ chmod +x hfarchive
 
 It is a single Python file. [uv](https://docs.astral.sh/uv/) installs its two
 dependencies (`huggingface_hub`, `PyYAML`) on first run. It needs Linux or
-macOS, and `git` if you archive runtimes. Put the file anywhere on your `PATH`
-to call it as `hfarchive`.
+macOS, `git` if you archive runtimes, and `uv` if a runtime has `wheels`. Put
+the file anywhere on your `PATH` to call it as `hfarchive`.
 
 Without uv, install the dependencies yourself and run it with Python 3.11+:
 `pip install huggingface_hub pyyaml && python3 hfarchive --help`.
@@ -123,6 +125,7 @@ missing and the script runs from a clone of this repo, it uses
 --enable qwen2.5-coder-7b-gguf     # force in an entry with enabled: false
 --category ocr,embeddings          # keep only these categories
 --no-runtimes                      # skip runtimes
+--no-wheels                        # archive runtimes without their Python wheels
 ```
 
 Without `--profile`, the config's `default_profile` is used. If it has none,
@@ -187,6 +190,17 @@ runtimes:
     tags: [llm]
     enabled: true
     notes: CPU build; build from source for CUDA.
+  - id: ComfyUI
+    git: https://github.com/Comfy-Org/ComfyUI
+    ref: v0.45.0
+    wheels:
+      python: "3.12"
+      platforms: [manylinux_2_28_x86_64, win_amd64]
+      requirements: [requirements.txt]
+      packages: ["torch==2.14.1+cu130", "torchvision==0.29.1+cu130"]
+      index_url: https://download.pytorch.org/whl/cu130
+      extra_index_urls: [https://pypi.org/simple]
+      start: Run `.venv/bin/python main.py` in the unpacked source.
 ```
 
 Every top-level section is optional except `models`.
@@ -239,6 +253,14 @@ still lands.
 | `tags` | | Labels that profiles select on. |
 | `enabled` | | `false` keeps the runtime out unless the profile has `include_disabled: true`. |
 | `notes` | | Free text. |
+| `wheels` | | Python dependencies to save as wheels; see below. |
+| `wheels.python` | yes | Target Python version, quoted: `"3.12"`. The wheels only install on that version. |
+| `wheels.platforms` | yes | pip platform tags, one wheelhouse each: `manylinux_2_28_x86_64` (or another glibc version, `manylinux2014_x86_64`, `*_aarch64`), `win_amd64`, `win_arm64`, `macosx_11_0_arm64` style. |
+| `wheels.requirements` | | Requirements files, as paths inside the runtime's source. They are read from the archived source at `ref`, so they match the pinned commit. `-r` includes are followed. |
+| `wheels.packages` | | Extra requirement lines, such as a CUDA build of PyTorch. `requirements` or `packages` is needed. |
+| `wheels.index_url` | | Primary package index, e.g. `https://download.pytorch.org/whl/cu130`. Default: PyPI. |
+| `wheels.extra_index_urls` | | More indexes. Every index is searched for the best match. |
+| `wheels.start` | | How to start the runtime once installed. Written to `INSTALL.md`. |
 
 Unknown keys are rejected, so a typo fails loudly instead of being ignored.
 
@@ -271,6 +293,44 @@ A runtime whose `ref` still resolves to the archived commit is skipped. The
 GitHub API is used for release assets. `hfarchive` uses `GITHUB_TOKEN` or the
 token from `gh auth token` if there is one. Without a token, GitHub allows 60
 requests per hour, and a run that hits the limit says so.
+
+### Python wheels
+
+A runtime with `wheels` also gets its Python dependencies, so it installs on
+a machine with no network:
+
+| File | What it is |
+|---|---|
+| `wheels-<ref>/<platform>/*.whl` | Every wheel the runtime needs on that platform, dependencies included. |
+| `wheels-<ref>/<platform>/requirements.lock.txt` | The exact set, `name==version --hash=sha256:…` per wheel; pip checks the hashes on install. |
+| `wheels-<ref>/INSTALL.md` | The offline install commands for each platform and how to start the runtime. |
+
+For each platform, `uv pip compile` resolves the requirements files and
+`packages` for the target Python and platform, then `pip download --no-deps
+--only-binary=:all:` fetches one wheel per pin. uv does the resolving because
+`pip download --platform` evaluates environment markers for the machine it
+runs on: a Linux run would leave out the Windows-only dependencies of a
+Windows set. pip comes from the script's environment if it has one, else from
+`uv run --with pip`. Installing needs only Python and pip:
+
+```bash
+cd _runtimes/ComfyUI
+tar -xzf ComfyUI-v0.45.0-src.tar.gz
+python3.12 -m venv ComfyUI-v0.45.0/.venv
+ComfyUI-v0.45.0/.venv/bin/python -m pip install --no-index \
+  --find-links wheels-v0.45.0/manylinux_2_28_x86_64 \
+  -r wheels-v0.45.0/manylinux_2_28_x86_64/requirements.lock.txt
+```
+
+Requirement lines that name no exact version are listed in `INSTALL.md`; the
+lock pins what they resolved to. A line with no wheel for the platform (only
+a source distribution, or not on any index) is reported by name. The rest is
+still resolved and downloaded, and the runtime is recorded as `partial` and
+the run exits 1. A platform whose lock and wheels are on the drive and match
+the manifest is skipped; one that changed config or commit is resolved again,
+and wheels no longer in its set are removed. Sizes are known only after the
+download: a CUDA PyTorch set is 3–4 GB per platform. `--no-wheels` skips the
+wheels and keeps any already archived.
 
 ## Checking an archive
 
@@ -335,11 +395,17 @@ run continues. Tokens are never printed or written to logs or the manifest.
 │   ├── USAGE.md
 │   └── _workflows/t2i-basic.json
 ├── _runtimes/
-│   └── llama.cpp/
-│       ├── mirror.git/
-│       ├── llama.cpp-<sha>.bundle
-│       ├── llama.cpp-b6100-src.tar.gz
-│       └── release-b6100/…
+│   ├── llama.cpp/
+│   │   ├── mirror.git/
+│   │   ├── llama.cpp-<sha>.bundle
+│   │   ├── llama.cpp-b6100-src.tar.gz
+│   │   └── release-b6100/…
+│   └── ComfyUI/
+│       ├── …
+│       └── wheels-v0.45.0/
+│           ├── INSTALL.md                 offline install commands per platform
+│           ├── manylinux_2_28_x86_64/     *.whl + requirements.lock.txt
+│           └── win_amd64/
 └── _hfarchive/
     ├── manifest.jsonl
     ├── config-latest.yaml                 the config of the latest run
@@ -355,8 +421,8 @@ and one `USAGE.md` with a section per entry.
 `INDEX.md` is rewritten after every download run, even when everything was
 already current. It lists every
 archived model by category with its repo, revision and commit, size, runtime,
-headline benchmarks, `USAGE.md` and workflows, and every runtime with its ref
-and commit. At the top it links the guide and the config of the latest run.
+headline benchmarks, `USAGE.md` and workflows, and every runtime with its ref,
+commit, files and, for runtimes with wheels, a link to `INSTALL.md`. At the top it links the guide and the config of the latest run.
 It covers everything in the manifest, not only the current config.
 
 Every run that downloads copies the config it used into `_hfarchive/`, with
@@ -387,7 +453,7 @@ and copied to `_hfarchive/logs/` after any run that downloaded something.
 | Code | Meaning |
 |---:|---|
 | 0 | Success, a clean dry run, or a clean `--check` |
-| 1 | A model, runtime, workflow or guide download failed (the rest of the run completes); `--verify-only` found a missing repo; `--refresh-sizes` could not measure a repo; `--check` found a missing or damaged file |
+| 1 | A model, runtime, workflow or guide download failed, or a runtime's wheels are partial (the rest of the run completes); `--verify-only` found a missing repo; `--refresh-sizes` could not measure a repo; `--check` found a missing or damaged file |
 | 2 | Config error, empty selection, bad destination, not enough space, or `--check` without a destination or manifest |
 | 3 | Refused: an entry is at or above the large-repo threshold |
 
@@ -451,7 +517,7 @@ uv run --no-project --with pytest --with huggingface_hub --with pyyaml pytest -q
 The tests download one ~2 KB `config.json` and a model card to exercise
 `hf download`; they never download model weights. Network tests are skipped
 when offline. Runtimes are tested against a local git repository, with GitHub
-mocked.
+mocked; wheels with uv and pip mocked.
 
 ## License
 

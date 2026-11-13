@@ -126,9 +126,24 @@ runtimes:
       comfyanonymous/ComfyUI now redirects to Comfy-Org/ComfyUI. v0.45.0 =
       commit 989d93d0d968e704c589ce0146bb18c77f6b50cc (latest release; tags up
       to v0.45.3 exist without releases). Linux has no release asset: install
-      from the git checkout with `pip install -r requirements.txt` plus a CUDA
-      PyTorch wheel (not archived here). Windows: the portable 7z (cu126 build
-      for older drivers).
+      the archived wheels (wheels-v0.45.0/INSTALL.md). Windows: the portable 7z
+      (cu126 build for older drivers), or the wheels. The README at v0.45.0
+      recommends stable PyTorch from the cu130 index (required on RTX 20 and
+      newer; GTX 10 cards need cu126, as in the cu126 portable). torch 2.14.1
+      is the newest stable release on that index; torchaudio has been in
+      maintenance since 2.9 and the index's newest build is 2.11.0. Python
+      3.12: supported by ComfyUI, vLLM and transformers alike.
+    wheels:
+      python: "3.12"
+      platforms: [manylinux_2_28_x86_64, win_amd64]
+      requirements: [requirements.txt]
+      packages: ["torch==2.14.1+cu130", "torchvision==0.29.1+cu130", "torchaudio==2.11.0+cu130"]
+      index_url: https://download.pytorch.org/whl/cu130
+      extra_index_urls: [https://pypi.org/simple]
+      start: |
+        From the unpacked source: `.venv/bin/python main.py` (Windows:
+        `.venv\Scripts\python main.py`). Point it at the archived models with
+        `--extra-model-paths-config`, starting from extra_model_paths.yaml.example.
 
   - id: ComfyUI-GGUF
     git: https://github.com/city96/ComfyUI-GGUF
@@ -140,6 +155,17 @@ runtimes:
       pinned to the head of main (2026-01-12). Clone into ComfyUI/custom_nodes
       and `pip install -r requirements.txt` (gguf package). Its tools/ folder
       converts and quantizes image models.
+    wheels:
+      python: "3.12"
+      platforms: [manylinux_2_28_x86_64, win_amd64]
+      requirements: [requirements.txt]
+      start: |
+        Unpack the source into ComfyUI's custom_nodes/ folder and install these
+        wheels into ComfyUI's .venv instead of a new one (skip the venv step);
+        its pins were resolved alongside ComfyUI's. If pip reports a conflict,
+        install by name from both wheelhouses: `python -m pip install
+        --no-index --find-links <ComfyUI wheels>/<platform> --find-links <these
+        wheels>/<platform> gguf sentencepiece protobuf`.
 
   - id: ComfyUI-GGUF-molbal
     git: https://github.com/molbal/ComfyUI-GGUF
@@ -150,7 +176,19 @@ runtimes:
       Fork of city96/ComfyUI-GGUF with Krea 2 support; needed by krea2-turbo-*.
       v26-10-30 = commit da5f435cd9a9e54ad27eed417ed72b1f2543ef41 (the release
       has no assets). Install it instead of city96's pack when running Krea 2
-      (both register the same node names).
+      (both register the same node names). Its requirements add comfy-kitchen,
+      which ComfyUI already pins.
+    wheels:
+      python: "3.12"
+      platforms: [manylinux_2_28_x86_64, win_amd64]
+      requirements: [requirements.txt]
+      start: |
+        Unpack the source into ComfyUI's custom_nodes/ folder and install these
+        wheels into ComfyUI's .venv instead of a new one (skip the venv step);
+        its pins were resolved alongside ComfyUI's. If pip reports a conflict,
+        install by name from both wheelhouses: `python -m pip install
+        --no-index --find-links <ComfyUI wheels>/<platform> --find-links <these
+        wheels>/<platform> gguf sentencepiece protobuf comfy-kitchen`.
 
   - id: stable-diffusion.cpp
     git: https://github.com/leejet/stable-diffusion.cpp
@@ -193,8 +231,22 @@ runtimes:
     notes: |
       v0.32.0 = commit 5df63a7203cdb9328d824a27b682e77c7b9928be, the latest
       stable release (v0.33.0rc3 is newer but a release candidate). Used by
-      openjev-flash-9b, whose card pins vllm==0.29.0. The wheels need their
-      Python dependencies (torch etc.) from PyPI, which are not archived here.
+      openjev-flash-9b, whose card pins vllm==0.29.0. The wheels below are the
+      PyPI build of vllm 0.32.0 (the same file as the plain release asset) with
+      its dependencies: torch 2.13.0 and the CUDA 13 libraries, ~4 GB, plus
+      openai and httpx at the versions the openjev card pins for its shim.
+      Linux only: vLLM has no Windows build. manylinux_2_31 because llguidance
+      ships no older Linux wheel, so the host needs glibc 2.31 or newer (Ubuntu
+      20.04+). The +cu129 release asset needs a cu129 torch, which is not in
+      this set.
+    wheels:
+      python: "3.12"
+      platforms: [manylinux_2_31_x86_64]
+      packages: ["vllm==0.32.0", "openai==3.26.0", "httpx==0.28.1"]
+      start: |
+        The vllm wheel is in the set, so the source is not needed to run it:
+        `vllm-v0.32.0/.venv/bin/vllm serve <model folder>`. Run it from
+        outside vllm-v0.32.0/, where Python would import the unbuilt source.
 
   - id: transformers
     git: https://github.com/huggingface/transformers
@@ -204,7 +256,22 @@ runtimes:
     notes: |
       v5.22.2 = commit 6d195c6262a0ac2ef44f7b9a308617562286ff45 (no release
       assets; install from the checkout or PyPI). Used by clef-omni, whose card
-      was tested with transformers 5.10.2 and torch 2.11.
+      was tested with transformers 5.10.2 and torch 2.11. The wheels pin the
+      same torch 2.14.1 (cu130) as ComfyUI, plus accelerate for
+      device_map="auto" offload and pillow and av for clef-omni's image, audio
+      and video inputs; ~3 GB. Linux only: clef-omni needs ~64 GB of GPU memory
+      or CPU offload, which is a Linux workstation job.
+    wheels:
+      python: "3.12"
+      platforms: [manylinux_2_28_x86_64]
+      packages: ["transformers==5.22.2", "torch==2.14.1+cu130", "torchvision==0.29.1+cu130",
+                 "accelerate", "pillow", "av"]
+      index_url: https://download.pytorch.org/whl/cu130
+      extra_index_urls: [https://pypi.org/simple]
+      start: |
+        The transformers wheel is in the set: use `transformers-v5.22.2/.venv/bin/python`
+        from outside transformers-v5.22.2/ (inside it, Python would import the
+        source tree instead).
 
 models:
 

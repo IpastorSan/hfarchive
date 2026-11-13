@@ -35,7 +35,7 @@ The job runs from research to a verified archive on their drive. Do it in this o
 
    Put a long brief in a file (`docs/models-YYYY-MM.md` when refreshing the default, or a file in the user's working directory otherwise) and summarise it in chat.
 4. **Wait for the user's choice.** They add, drop or swap models. Don't download before they say so: a run is hundreds of GB and hours of transfer.
-5. **Write the config** for exactly what they chose, with `usage` notes, workflows and the runtimes it needs (step 5 below). Check it with `--verify-only`, then show the `--dry-run` to the user: the totals, what is over `large_repo_gb`, and the free space after the run.
+5. **Write the config** for exactly what they chose, with `usage` notes, workflows and the runtimes it needs, with `wheels` pinned for Python runtimes (step 5 below). Check it with `--verify-only`, then show the `--dry-run` to the user: the totals, what is over `large_repo_gb`, and the free space after the run.
 6. **Download everything** they approved:
    ```sh
    ./hfarchive --config <their config> --dest <drive> --profile <profile> [--allow-large]
@@ -108,6 +108,14 @@ Follow the schema in the README. Per entry:
 - `usage.workflows` for every image and video model: ComfyUI workflow JSONs, preferably from `Comfy-Org/workflow_templates`, at a pinned commit URL. Check each URL returns valid JSON.
 
 Pin every runtime in `runtimes:` to a release tag (or a commit when there are no releases) found with `gh api`, and check that `release_assets` globs match real assets. Include every custom-node pack the workflows need.
+
+Pin `wheels` for every Python runtime (ComfyUI and its node packs, vLLM, transformers), so it installs offline:
+- `python`: one quoted version every pinned runtime supports (read each `requires-python`).
+- `requirements`: the runtime's own requirements files at `ref`; read them in a clone at that ref.
+- `packages`: the PyTorch build the runtime recommends at `ref` (its README or install docs), pinned with the CUDA local version (`torch==X+cu130`), and `index_url` set to that CUDA index with PyPI as an extra index.
+- `platforms`: Linux x86_64 and Windows amd64 where the runtime runs on both. Pick the manylinux version from the wheels the set actually needs (some packages ship only `manylinux_2_31`).
+- `start`: how to start it from the unpacked source; node packs install into ComfyUI's environment.
+- Check that each set resolves without downloading wheels: `uv pip compile --python-version 3.12 --python-platform x86_64-manylinux_2_28 --only-binary :all: --index-strategy unsafe-best-match [--index-url …] <requirements.txt> <packages file>` (and `x86_64-pc-windows-msvc`). Explain in `notes` anything that cannot be made offline-installable.
 
 ### 6. Check and size it
 

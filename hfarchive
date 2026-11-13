@@ -20,6 +20,7 @@ import datetime
 import fnmatch
 import functools
 import hashlib
+import importlib.util
 import json
 import logging
 import os
@@ -28,6 +29,8 @@ import re
 import shutil
 import subprocess
 import sys
+import tarfile
+import tempfile
 import threading
 import time
 import urllib.error
@@ -45,7 +48,7 @@ from huggingface_hub.utils import (
     filter_repo_objects,
 )
 
-__version__ = "1.1.0"
+__version__ = "1.2.0"
 
 DEFAULT_CONFIG = "models.yaml"
 # The curated selection `--init` writes and a clone falls back to.
@@ -173,6 +176,86 @@ def is_url(value: object) -> bool:
 
 _GITHUB_REPO = re.compile(r"github\.com[:/]([^/]+)/([^/]+?)(?:\.git)?/?$")
 
+# pip's --platform tags mapped to uv's --python-platform, which resolves
+# environment markers for the target instead of for this machine.
+_UV_PLATFORMS = [
+    (re.compile(r"manylinux_(\d+)_(\d+)_(x86_64|aarch64)"),
+     lambda m: f"{m[3]}-manylinux_{m[1]}_{m[2]}"),
+    (re.compile(r"manylinux2014_(x86_64|aarch64)"), lambda m: f"{m[1]}-manylinux2014"),
+    (re.compile(r"win_amd64"), lambda m: "x86_64-pc-windows-msvc"),
+    (re.compile(r"win_arm64"), lambda m: "aarch64-pc-windows-msvc"),
+    (re.compile(r"macosx_\d+_\d+_arm64"), lambda m: "aarch64-apple-darwin"),
+    (re.compile(r"macosx_\d+_\d+_x86_64"), lambda m: "x86_64-apple-darwin"),
+]
+
+
+def uv_platform(tag: str) -> str | None:
+    for pattern, convert in _UV_PLATFORMS:
+        m = pattern.fullmatch(tag)
+        if m:
+            return convert(m)
+    return None
+
+
+def _str_list(what: str, value: object, check=None) -> None:
+    if not isinstance(value, list) or not all(isinstance(v, str) and v.strip() for v in value):
+        raise CatalogError(f"{what} must be a list of non-empty strings")
+    for v in value:
+        problem = check(v) if check else None
+        if problem:
+            raise CatalogError(f"{what}: {v!r} {problem}")
+
+
+@dataclass
+class Wheels:
+    """Python dependencies of a runtime, saved as one wheelhouse per platform."""
+    python: str
+    platforms: list[str]
+    requirements: list[str] = field(default_factory=list)
+    packages: list[str] = field(default_factory=list)
+    index_url: str | None = None
+    extra_index_urls: list[str] = field(default_factory=list)
+    start: str | None = None
+
+    @classmethod
+    def parse(cls, runtime_id: str, body: dict) -> Wheels:
+        what = f"runtime {runtime_id!r} wheels"
+        _check_keys(what, body, set(cls.__dataclass_fields__), {"python", "platforms"})
+        w = cls(**body)
+        # YAML reads an unquoted 3.10 as the float 3.1.
+        if not isinstance(w.python, str) or not re.fullmatch(r"3\.\d+", w.python):
+            raise CatalogError(f"{what}: python must be a quoted version such as \"3.12\"")
+        _str_list(f"{what} platforms", w.platforms, lambda p: None if uv_platform(p) else (
+            "is not supported; use manylinux_2_28_x86_64, manylinux2014_x86_64, "
+            "win_amd64, win_arm64 or macosx_11_0_arm64 style tags"))
+        if not w.platforms or len(set(w.platforms)) != len(w.platforms):
+            raise CatalogError(f"{what}: platforms must be a non-empty list without duplicates")
+        _str_list(f"{what} requirements", w.requirements, lambda p: (
+            "must be a relative path inside the source"
+            if p.startswith(("/", "\\")) or ".." in Path(p).parts else None))
+        _str_list(f"{what} packages", w.packages)
+        if not w.requirements and not w.packages:
+            raise CatalogError(f"{what}: needs `requirements` or `packages`")
+        if w.index_url is not None and not is_url(w.index_url):
+            raise CatalogError(f"{what}: index_url must be an http(s) URL")
+        _str_list(f"{what} extra_index_urls", w.extra_index_urls,
+                  lambda u: None if is_url(u) else "is not an http(s) URL")
+        if w.start is not None and not isinstance(w.start, str):
+            raise CatalogError(f"{what}: start must be a string")
+        return w
+
+    def describe(self) -> str:
+        """One line for --list and --dry-run."""
+        def count(items: list, noun: str) -> str:
+            return f"{len(items)} {noun}{'s' if len(items) != 1 else ''}"
+
+        parts = [f"py{self.python}: " + ", ".join(self.platforms)]
+        if self.requirements:
+            parts.append(count(self.requirements, "requirement file"))
+        if self.packages:
+            parts.append(count(self.packages, "package"))
+        return "; ".join(parts)
+
 
 @dataclass
 class Runtime:
@@ -184,6 +267,7 @@ class Runtime:
     tags: list[str] = field(default_factory=list)
     enabled: bool = True
     notes: str | None = None
+    wheels: Wheels | None = None
 
     @classmethod
     def parse(cls, body: dict) -> Runtime:
@@ -193,6 +277,8 @@ class Runtime:
         rt.id, rt.ref = str(rt.id), str(rt.ref)
         if not SAFE_NAME.match(rt.id):
             raise CatalogError(f"runtime id {rt.id!r} must be a plain file name")
+        if rt.wheels is not None:
+            rt.wheels = Wheels.parse(rt.id, rt.wheels)
         if rt.release_assets and not rt.github_repo:
             raise CatalogError(f"runtime {rt.id!r}: release_assets needs a github.com git URL")
         if rt.release_assets and rt.ref == "HEAD":
@@ -210,6 +296,16 @@ class Runtime:
 
     def dest_dir(self, dest: Path) -> Path:
         return Path(dest) / RUNTIMES_DIR / self.id
+
+    def wheels_dir(self, dest: Path) -> Path:
+        return self.dest_dir(dest) / f"wheels-{self.safe_ref}"
+
+    def source_name(self) -> str:
+        """The folder the source tarball unpacks to."""
+        return f"{self.id}-{self.safe_ref}"
+
+    def source_tarball(self, dest: Path) -> Path:
+        return self.dest_dir(dest) / f"{self.source_name()}-src.tar.gz"
 
 
 @dataclass
@@ -549,6 +645,19 @@ models:
 #     tags: [llm]
 #     enabled: true
 #     notes: CPU build; build from source for CUDA.
+#   - id: ComfyUI
+#     git: https://github.com/Comfy-Org/ComfyUI
+#     ref: v0.45.0
+#     # Python dependencies as wheels under _runtimes/<id>/wheels-<ref>/<platform>/,
+#     # with an INSTALL.md for installing them offline. --no-wheels skips them.
+#     wheels:
+#       python: "3.12"                            # quoted
+#       platforms: [manylinux_2_28_x86_64, win_amd64]
+#       requirements: [requirements.txt]         # paths in the source at `ref`
+#       packages: ["torch==2.14.1+cu130"]         # extra requirement lines
+#       index_url: https://download.pytorch.org/whl/cu130
+#       extra_index_urls: [https://pypi.org/simple]
+#       start: Run `.venv/bin/python main.py` in the unpacked source.
 """
 
 
@@ -1057,7 +1166,7 @@ def check_items(dest: Path, records: list[dict]) -> tuple[list[CheckItem], list[
                 items.append(CheckItem(f"{mid}: {wf['path']}", Path(dest) / wf["path"],
                                        wf.get("size"), "sha256", wf.get("sha256")))
     for rid, rec in latest_records(records, "runtime").items():
-        for art in rec.get("artifacts") or []:
+        for art in (rec.get("artifacts") or []) + wheel_artifacts(rec.get("wheels")):
             items.append(CheckItem(f"runtime {rid}: {art['path']}", Path(dest) / art["path"],
                                    art.get("size"), "sha256", art.get("sha256")))
     # Every dated config copy stays; config-latest.yaml is overwritten each run,
@@ -1367,6 +1476,7 @@ class RuntimeStatus:
     assets: list[dict] = field(default_factory=list)
     error: str | None = None
     previous: dict | None = None  # manifest record when this commit is already archived
+    last: dict | None = None  # newest good manifest record for this id, any commit
 
     @property
     def archived(self) -> bool:
@@ -1379,7 +1489,8 @@ class RuntimeStatus:
 
 def already_archived(st: RuntimeStatus, dest: Path | None,
                      records: dict[str, dict]) -> dict | None:
-    """The previous record if it holds this commit and every artifact is still there."""
+    """The previous record if it holds this commit and every artifact is still
+    there. Wheels are checked per platform when they are archived."""
     prev = records.get(st.runtime.id)
     if dest is None or not prev or not st.commit or prev.get("commit") != st.commit:
         return None
@@ -1396,7 +1507,7 @@ def already_archived(st: RuntimeStatus, dest: Path | None,
 
 def probe_runtime(rt: Runtime, dest: Path | None, records: dict[str, dict]) -> RuntimeStatus:
     """Resolve the ref and list release assets. Never raises."""
-    st = RuntimeStatus(rt)
+    st = RuntimeStatus(rt, last=records.get(rt.id))
     try:
         st.commit = resolve_remote_ref(rt.git, rt.ref)
         if st.commit is None:
@@ -1428,6 +1539,14 @@ class RuntimeResult:
     commit: str | None = None
     artifacts: list[dict] = field(default_factory=list)
     message: str = ""
+    wheels: dict | None = None  # manifest summary of the wheelhouses
+    wheels_skipped: bool = False  # --no-wheels: `wheels` is carried over, not attempted
+
+    @property
+    def incomplete(self) -> bool:
+        """Failed, or archived with some wheels missing this run."""
+        return self.status == "failed" or bool(
+            self.wheels and not self.wheels_skipped and self.wheels["status"] != "complete")
 
 
 def update_mirror(rt: Runtime, mirror: Path) -> None:
@@ -1443,14 +1562,39 @@ def update_mirror(rt: Runtime, mirror: Path) -> None:
     git("-C", str(mirror), "fetch", "--prune", "--quiet", "origin")
 
 
-def archive_runtime(st: RuntimeStatus, dest: Path) -> RuntimeResult:
-    """Mirror, bundle, source tarball and release assets under $DEST/_runtimes/<id>/."""
+def archive_runtime(st: RuntimeStatus, dest: Path, wheels: bool = True) -> RuntimeResult:
+    """Source, release assets and, unless `wheels` is False, the Python wheels,
+    under $DEST/_runtimes/<id>/."""
     rt = st.runtime
     if st.error:
         return RuntimeResult(rt, "failed", st.commit, message=st.error)
     if st.previous:
-        return RuntimeResult(rt, "up-to-date", st.commit,
-                             artifacts=st.previous.get("artifacts") or [])
+        res = RuntimeResult(rt, "up-to-date", st.commit,
+                            artifacts=st.previous.get("artifacts") or [])
+    else:
+        res = archive_source(st, dest)
+        if res.status == "failed":
+            return res
+    if rt.wheels is None:
+        return res
+    prev = (st.last or {}).get("wheels")
+    if not wheels:
+        res.wheels_skipped = True
+        # Wheels already on the drive for this config and commit stay recorded.
+        if prev and prev.get("fingerprint") == wheels_fingerprint(rt.wheels, res.commit):
+            res.wheels = prev
+        return res
+    res.wheels = archive_wheels(rt, rt.wheels, dest, res.commit, rt.source_tarball(dest), prev)
+    if res.wheels["status"] != "complete":
+        res.message = f"wheels {res.wheels['status']}: " + "; ".join(
+            f"{plat}: {p['message']}" for plat, p in res.wheels["platforms"].items()
+            if p.get("message"))
+    return res
+
+
+def archive_source(st: RuntimeStatus, dest: Path) -> RuntimeResult:
+    """Mirror, bundle, source tarball and release assets."""
+    rt = st.runtime
     d = rt.dest_dir(dest)
     d.mkdir(parents=True, exist_ok=True)
     mirror = d / "mirror.git"
@@ -1466,10 +1610,10 @@ def archive_runtime(st: RuntimeStatus, dest: Path) -> RuntimeResult:
                 git("-C", str(mirror), "bundle", "create", "--quiet", str(part), "--all")
         artifacts.append(artifact_record(bundle, dest, kind="git-bundle"))
 
-        tarball = d / f"{rt.id}-{rt.safe_ref}-src.tar.gz"
+        tarball = rt.source_tarball(dest)
         with atomic_target(tarball) as part:
             git("-C", str(mirror), "archive", "--format=tar.gz",
-                f"--prefix={rt.id}-{rt.safe_ref}/", "-o", str(part), commit)
+                f"--prefix={rt.source_name()}/", "-o", str(part), commit)
         artifacts.append(artifact_record(tarball, dest, kind="source"))
 
         for asset in st.assets:
@@ -1491,7 +1635,388 @@ def runtime_records(results: list[RuntimeResult], dest: Path) -> list[dict]:
         "rel_dest": os.path.relpath(r.runtime.dest_dir(dest), dest),
         "artifacts": r.artifacts, "tags": r.runtime.tags, "notes": r.runtime.notes,
         "message": r.message or None,
+        **({"wheels": r.wheels} if r.wheels else {}),
     } for r in results]
+
+
+# ================================================================== wheels
+LOCK_NAME = "requirements.lock.txt"
+WHEELS_INSTALL_NAME = "INSTALL.md"
+
+
+def wheel_artifacts(summary: dict | None) -> list[dict]:
+    """Every file a runtime's wheels summary records: INSTALL.md, wheels, locks."""
+    if not summary:
+        return []
+    arts = [summary["install"]] if summary.get("install") else []
+    return arts + [a for p in (summary.get("platforms") or {}).values()
+                   for a in p.get("artifacts") or []]
+
+
+def wheel_stats(platform: dict) -> tuple[int, int]:
+    """(number of wheels, their bytes) of one platform's summary."""
+    wheels = [a for a in platform.get("artifacts") or [] if a.get("kind") == "wheel"]
+    return len(wheels), sum(a["size"] for a in wheels)
+
+
+def canonical_name(name: str) -> str:
+    return re.sub(r"[-_.]+", "-", name).lower()
+
+
+def wheel_name_version(filename: str) -> tuple[str, str]:
+    """(normalised name, version) from a wheel file name."""
+    parts = filename[: -len(".whl")].split("-")
+    return canonical_name(parts[0]), parts[1].lower()
+
+
+_PIN_LINE = re.compile(r"^([A-Za-z0-9][A-Za-z0-9._-]*)(?:\[[^\]]*\])?\s*==\s*([^\s;#\\]+)")
+
+
+def read_pins(path: Path) -> dict[str, str]:
+    """name -> version from a resolved requirements file."""
+    pins = {}
+    for line in path.read_text(encoding="utf-8").splitlines():
+        m = _PIN_LINE.match(line.strip())
+        if m:
+            pins[canonical_name(m[1])] = m[2].lower()
+    return pins
+
+
+def requirement_specs(path: Path, seen: set[Path] | None = None) -> list[str]:
+    """Requirement lines of a requirements file, following `-r` includes and
+    skipping comments and other options."""
+    seen = set() if seen is None else seen
+    path = path.resolve()
+    if path in seen:
+        return []
+    seen.add(path)
+    specs: list[str] = []
+    for raw in path.read_text(encoding="utf-8").splitlines():
+        line = re.split(r"(?:^|\s)#", raw, maxsplit=1)[0].strip()
+        if not line:
+            continue
+        m = re.match(r"^(?:-r|--requirement)(?:\s+|=)(\S+)$", line)
+        if m:
+            specs += requirement_specs(path.parent / m[1], seen)
+        elif not line.startswith("-"):
+            specs.append(line)
+    return specs
+
+
+def is_pinned(spec: str) -> bool:
+    req = spec.split(";", 1)[0]
+    return "==" in req or " @ " in req or "://" in req
+
+
+def index_args(w: Wheels) -> list[str]:
+    out = ["--index-url", w.index_url] if w.index_url else []
+    for url in w.extra_index_urls:
+        out += ["--extra-index-url", url]
+    return out
+
+
+def build_resolve_command(uv: str, w: Wheels, platform_tag: str, inputs: list[Path],
+                          output: Path) -> list[str]:
+    """`uv pip compile` for the target platform. Unlike `pip download --platform`,
+    it evaluates markers such as `sys_platform == "win32"` for the target."""
+    return [uv, "pip", "compile", "--no-header", "--no-annotate",
+            "--python-version", w.python, "--python-platform", uv_platform(platform_tag),
+            "--only-binary", ":all:", "--index-strategy", "unsafe-best-match",
+            *index_args(w), "-o", str(output), *map(str, inputs)]
+
+
+def build_download_command(pip: list[str], w: Wheels, platform_tag: str, resolved: Path,
+                           wheelhouse: Path) -> list[str]:
+    """`pip download` of the resolved set, one file per pin."""
+    return [*pip, "download", "--no-deps", "--only-binary=:all:", "--implementation", "cp",
+            "--python-version", w.python, "--platform", platform_tag,
+            "--disable-pip-version-check", "--progress-bar", "off",
+            "-d", str(wheelhouse), *index_args(w), "-r", str(resolved)]
+
+
+def wheel_tools() -> tuple[str | None, list[str] | None, str | None]:
+    """(uv, pip command, error). pip comes from this script's environment when
+    it has one, else from a throwaway uv environment."""
+    uv = shutil.which("uv")
+    if not uv:
+        return None, None, "uv is not installed; it resolves the wheels for each platform"
+    if importlib.util.find_spec("pip"):
+        return uv, [sys.executable, "-m", "pip"], None
+    return uv, [uv, "run", "--no-project", "--with", "pip", "python", "-m", "pip"], None
+
+
+def run_tool(cmd: list[str]) -> tuple[int, str]:
+    log.debug("running: %s", " ".join(cmd))
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True)
+    except OSError as exc:
+        return 127, str(exc)
+    return proc.returncode, (proc.stdout or "") + (proc.stderr or "")
+
+
+def tool_error(output: str) -> str:
+    # uv decorates its errors with box-drawing characters; keep the words.
+    lines = [ln.strip().lstrip("×╰─▶│ ") for ln in output.strip().splitlines()]
+    return " | ".join([ln for ln in lines if ln][-3:]) or "failed without output"
+
+
+def wheels_fingerprint(w: Wheels, commit: str | None) -> str:
+    """Changes when the config or the source (and so its requirements) does."""
+    blob = json.dumps({"wheels": asdict(w), "commit": commit}, sort_keys=True)
+    return hashlib.sha256(blob.encode()).hexdigest()
+
+
+def wheel_inputs(rt: Runtime, w: Wheels, source: Path,
+                 tmp: Path) -> tuple[list[Path], list[str]]:
+    """Requirement files from the archived source plus a file of `packages`:
+    (files to resolve, the requirement lines they hold)."""
+    inputs: list[Path] = []
+    specs: list[str] = []
+    if w.requirements:
+        root = tmp / "src" / rt.source_name()
+        wanted = {f"{rt.source_name()}/{req}" for req in w.requirements}
+        with tarfile.open(source) as tar:
+            # The named files and any requirements files they may include.
+            members = [m for m in tar.getmembers() if m.isfile()
+                       and (m.name in wanted or m.name.endswith((".txt", ".in")))]
+            tar.extractall(tmp / "src", members=members, filter="data")
+        for req in w.requirements:
+            path = root / req
+            if not path.is_file():
+                raise FileNotFoundError(f"{req} is not in the source at {rt.ref}")
+            inputs.append(path)
+            specs += requirement_specs(path)
+    if w.packages:
+        packages = tmp / "packages.txt"
+        packages.write_text("\n".join(w.packages) + "\n", encoding="utf-8")
+        inputs.append(packages)
+        specs += w.packages
+    return inputs, list(dict.fromkeys(specs))
+
+
+def resolve_wheels(uv: str, w: Wheels, platform_tag: str, inputs: list[Path],
+                   specs: list[str], tmp: Path) -> tuple[Path | None, list[dict], str | None]:
+    """Resolve the whole set for one platform: (resolved file, unavailable
+    lines, error). When the set does not resolve, find the lines that do not
+    resolve on their own and resolve the rest without them."""
+    resolved = tmp / f"resolved-{platform_tag}.txt"
+    rc, out = run_tool(build_resolve_command(uv, w, platform_tag, inputs, resolved))
+    if rc == 0:
+        return resolved, [], None
+
+    def alone(item: tuple[int, str]) -> dict | None:
+        i, spec = item
+        one = tmp / f"one-{platform_tag}-{i}.txt"
+        one.write_text(spec + "\n", encoding="utf-8")
+        rc1, out1 = run_tool(build_resolve_command(uv, w, platform_tag, [one],
+                                                   one.with_suffix(".resolved")))
+        return None if rc1 == 0 else {"requirement": spec, "error": tool_error(out1)}
+
+    with cf.ThreadPoolExecutor(max_workers=8) as ex:
+        unavailable = [u for u in ex.map(alone, enumerate(specs)) if u]
+    bad = {u["requirement"] for u in unavailable}
+    rest = [s for s in specs if s not in bad]
+    if not unavailable or not rest:
+        return None, unavailable, tool_error(out)
+    rest_file = tmp / f"rest-{platform_tag}.txt"
+    rest_file.write_text("\n".join(rest) + "\n", encoding="utf-8")
+    rc, out = run_tool(build_resolve_command(uv, w, platform_tag, [rest_file], resolved))
+    if rc != 0:
+        return None, unavailable, tool_error(out)
+    return resolved, unavailable, None
+
+
+def download_wheelhouse(rt: Runtime, w: Wheels, platform_tag: str, inputs: list[Path],
+                        specs: list[str], tools: tuple[str, list[str]], dest: Path, tmp: Path,
+                        known: dict[str, dict]) -> dict:
+    """Resolve, download and lock one platform; return its manifest summary.
+    `known` maps paths to earlier artifact records, whose hashes are reused
+    for files of the same size instead of reading them again."""
+    uv, pip = tools
+    wheelhouse = rt.wheels_dir(dest) / platform_tag
+    resolved, unavailable, error = resolve_wheels(uv, w, platform_tag, inputs, specs, tmp)
+    if resolved is None:
+        return {"status": "failed", "message": f"could not resolve: {error}",
+                "unavailable": unavailable}
+    pins = read_pins(resolved)
+    wheelhouse.mkdir(parents=True, exist_ok=True)
+    log.info("%s: downloading %d wheels for %s...", rt.id, len(pins), platform_tag)
+    rc, out = run_tool(build_download_command(pip, w, platform_tag, resolved, wheelhouse))
+    files: dict[str, Path] = {}
+    for whl in sorted(wheelhouse.glob("*.whl")):
+        name, version = wheel_name_version(whl.name)
+        if pins.get(name) == version and name not in files:
+            files[name] = whl
+        else:  # left by an earlier run with other pins
+            log.info("%s: removing %s, not in the resolved set", rt.id, whl.name)
+            whl.unlink()
+    missing = sorted(set(pins) - set(files))
+    artifacts, lock_lines = [], []
+    for name in sorted(files):
+        rel = os.path.relpath(files[name], dest)
+        prev = known.get(rel)
+        art = (prev if prev and prev.get("size") == files[name].stat().st_size
+               else artifact_record(files[name], dest, kind="wheel"))
+        artifacts.append(art)
+        lock_lines.append(f"{name}=={pins[name]} --hash=sha256:{art['sha256']}")
+    lock = wheelhouse / LOCK_NAME
+    header = [f"# {rt.id} {rt.ref}: wheels for Python {w.python} on {platform_tag}.",
+              "# Written by hfarchive from the files in this folder; install with",
+              "#   python -m pip install --no-index --find-links <this folder> -r <this file>"]
+    header += [f"# not available as a wheel: {u['requirement']}" for u in unavailable]
+    header += [f"# resolved but not downloaded: {name}=={pins[name]}" for name in missing]
+    with atomic_target(lock) as part:
+        part.write_text("\n".join(header + lock_lines) + "\n", encoding="utf-8")
+    artifacts.append(artifact_record(lock, dest, kind="wheel-lock"))
+
+    problems = []
+    if unavailable:
+        problems.append("not available as wheels: "
+                        + ", ".join(u["requirement"] for u in unavailable))
+    if missing:
+        problems.append("not downloaded: " + ", ".join(missing)
+                        + (f" ({tool_error(out)})" if rc != 0 else ""))
+    elif rc != 0:
+        problems.append(f"pip download failed: {tool_error(out)}")
+    summary = {"status": "complete" if not problems else "partial" if files else "failed",
+               "unavailable": unavailable, "missing": missing, "artifacts": artifacts}
+    if problems:
+        summary["message"] = "; ".join(problems)
+    return summary
+
+
+def reusable_wheelhouse(dest: Path, platform_tag: str, prev: dict,
+                        fingerprint: str) -> dict | None:
+    """The previous summary of a complete wheelhouse whose config and source
+    are unchanged and whose wheels (by size) and lock (by hash) are intact."""
+    p = (prev.get("platforms") or {}).get(platform_tag)
+    if prev.get("fingerprint") != fingerprint or not p or p.get("status") != "complete":
+        return None
+    for a in p.get("artifacts") or []:
+        item = CheckItem(a["path"], Path(dest) / a["path"], a.get("size"), "sha256",
+                         a.get("sha256"))
+        if verify_item(item, fast=a.get("kind") == "wheel"):
+            return None
+    return p
+
+
+def archive_wheels(rt: Runtime, w: Wheels, dest: Path, commit: str | None, source: Path,
+                   prev: dict | None) -> dict:
+    """Wheelhouses for every platform and their INSTALL.md; return the manifest
+    summary. Never raises; a platform that fails is recorded as failed."""
+    fingerprint = wheels_fingerprint(w, commit)
+    prev = prev or {}
+    platforms: dict[str, dict] = {}
+    for plat in w.platforms:
+        reused = reusable_wheelhouse(dest, plat, prev, fingerprint)
+        if reused is not None:
+            log.info("%s: wheels for %s already archived", rt.id, plat)
+            platforms[plat] = reused
+    todo = [plat for plat in w.platforms if plat not in platforms]
+    unpinned = prev.get("unpinned") or []
+    if todo:
+        uv, pip, error = wheel_tools()
+        with tempfile.TemporaryDirectory(prefix="hfarchive-wheels-") as tmp:
+            inputs: list[Path] = []
+            if error is None:
+                try:
+                    inputs, specs = wheel_inputs(rt, w, source, Path(tmp))
+                    unpinned = [s for s in specs if not is_pinned(s)]
+                except (OSError, tarfile.TarError, UnicodeDecodeError) as exc:
+                    error = str(exc)
+            for plat in todo:
+                if error is not None:
+                    platforms[plat] = {"status": "failed", "message": error}
+                    continue
+                known = {a["path"]: a for a in ((prev.get("platforms") or {}).get(plat) or {})
+                         .get("artifacts") or [] if a.get("kind") == "wheel"}
+                p = platforms[plat] = download_wheelhouse(
+                    rt, w, plat, inputs, specs, (uv, pip), Path(dest), Path(tmp), known)
+                n, size = wheel_stats(p)
+                log.log(logging.INFO if p["status"] == "complete" else logging.ERROR,
+                        "%s: wheels for %s %s (%d wheels, %s)%s", rt.id, plat, p["status"],
+                        n, human(size), f" — {p['message']}" if p.get("message") else "")
+    statuses = {p["status"] for p in platforms.values()}
+    summary = {
+        "python": w.python, "fingerprint": fingerprint,
+        "status": ("complete" if statuses == {"complete"}
+                   else "failed" if statuses == {"failed"} else "partial"),
+        "unpinned": unpinned,
+        "platforms": {plat: platforms[plat] for plat in w.platforms},
+    }
+    install = rt.wheels_dir(dest) / WHEELS_INSTALL_NAME
+    install.parent.mkdir(parents=True, exist_ok=True)
+    with atomic_target(install) as part:
+        part.write_text(install_markdown(rt, w, commit, summary), encoding="utf-8")
+    summary["install"] = artifact_record(install, dest, kind="wheel-install")
+    return summary
+
+
+def install_commands(rt: Runtime, python: str, platform_tag: str) -> list[str]:
+    """Offline install of one wheelhouse, run from _runtimes/<id>/."""
+    win = platform_tag.startswith("win")
+
+    def path(*parts: str) -> str:
+        return ("\\" if win else "/").join(parts)
+
+    src, wd = rt.source_name(), rt.wheels_dir(Path()).name
+    venv_python = path(src, ".venv", "Scripts" if win else "bin", "python")
+    return ["```bat" if win else "```sh",
+            f"cd {path(RUNTIMES_DIR, rt.id)}",
+            f"tar -xzf {rt.source_tarball(Path()).name}",
+            f"{'py -' if win else 'python'}{python} -m venv {path(src, '.venv')}",
+            f"{venv_python} -m pip install --no-index --find-links {path(wd, platform_tag)} "
+            f"-r {path(wd, platform_tag, LOCK_NAME)}",
+            "```"]
+
+
+def install_markdown(rt: Runtime, w: Wheels, commit: str | None, summary: dict) -> str:
+    src = rt.source_name()
+    lines = [
+        f"# {rt.id} {rt.ref}: offline install", "",
+        f"Python {w.python} dependencies of {rt.id} at `{rt.ref}` (commit "
+        f"`{commit or 'not recorded'}`), saved by hfarchive {__version__}. Each platform "
+        f"folder holds the wheels and `{LOCK_NAME}`, the exact set with sha256 hashes, "
+        "which pip checks on install. No network is needed.", "",
+    ]
+    if w.requirements:
+        lines.append("Resolved from " + ", ".join(f"`{r}`" for r in w.requirements)
+                     + " in the source" + (" plus:" if w.packages else "."))
+    if w.packages:
+        if not w.requirements:
+            lines.append("Resolved from:")
+        lines += ["", *[f"- `{p}`" for p in w.packages]]
+    indexes = ([w.index_url] if w.index_url else []) + w.extra_index_urls
+    if indexes:
+        lines += ["", "Indexes: " + ", ".join(f"<{u}>" for u in indexes)]
+    lines += [
+        "",
+        f"The commands run from `_runtimes/{rt.id}/` on this drive (or a copy of it). They "
+        f"unpack the source to `{src}/` and create `{src}/.venv` with Python {w.python}, "
+        "which the wheels are built for. To install into an environment you already have "
+        "(for a custom node pack, the one ComfyUI runs in), skip the venv step and run "
+        "that environment's python instead.", "",
+    ]
+    for plat, p in summary["platforms"].items():
+        lines += [f"## {plat}", ""]
+        n, size = wheel_stats(p)
+        if not n:
+            lines += [f"Not archived: {p.get('message') or 'failed'}.", ""]
+            continue
+        lines += [f"{p['status'].capitalize()}: {n} wheels, {human(size)}.", "",
+                  *install_commands(rt, w.python, plat), ""]
+        gaps = [u["requirement"] for u in p.get("unavailable") or []] + (p.get("missing") or [])
+        if gaps:
+            lines += ["Not in this wheelhouse; install these online or from another source:",
+                      "", *[f"- `{g}`" for g in gaps], ""]
+    if summary["unpinned"]:
+        lines += ["## Unpinned requirements", "",
+                  "These lines name no exact version. The lock files pin what they resolved "
+                  "to when this archive was made:", "",
+                  *[f"- `{u}`" for u in summary["unpinned"]], ""]
+    lines += ["## Start", "",
+              w.start.rstrip() if w.start else f"Follow the README in `{src}/`.", ""]
+    return "\n".join(lines)
 
 
 # =================================================================== usage
@@ -1621,7 +2146,9 @@ def index_markdown(records: list[dict]) -> str:
         "`git hash-object <file>` give the same values.", "",
         "Runtimes are in `_runtimes/<id>/`: restore the source with "
         "`git clone <id>-<sha>.bundle <dir> && git -C <dir> checkout <sha>`, or unpack "
-        "the `-src.tar.gz`. Prebuilt binaries, if any, are in `release-<ref>/`.", "",
+        "the `-src.tar.gz`. Prebuilt binaries, if any, are in `release-<ref>/`; Python "
+        "dependencies, if any, in `wheels-<ref>/`, whose `INSTALL.md` gives the offline "
+        "install commands.", "",
         f"## Models ({len(models)}, {human(total)})", "",
     ]
     by_cat: dict[str, list[dict]] = {}
@@ -1648,13 +2175,21 @@ def index_markdown(records: list[dict]) -> str:
         out.append("")
     out += [f"## Runtimes ({len(runtimes)})", ""]
     if runtimes:
-        out += ["| Runtime | Source | Ref | Commit | Files |", "|---|---|---|---|---|"]
+        out += ["| Runtime | Source | Ref | Commit | Files | Offline install |",
+                "|---|---|---|---|---|---|"]
         for rid in sorted(runtimes):
             rec = runtimes[rid]
             files = ", ".join(_link(Path(a["path"]).name, a["path"])
                               for a in rec.get("artifacts") or [])
+            wheels = rec.get("wheels") or {}
+            install = "-"
+            if wheels.get("install"):
+                plats = ", ".join(f"{plat} {p['status']}"
+                                  for plat, p in (wheels.get("platforms") or {}).items())
+                install = (f"{_link(WHEELS_INSTALL_NAME, wheels['install']['path'])} "
+                           f"(Python {_cell(wheels.get('python'))}: {_cell(plats)})")
             out.append(f"| {_cell(rid)} | <{rec.get('git')}> | `{_cell(rec.get('ref'))}` | "
-                       f"`{rec.get('commit') or '?'}` | {files or '-'} |")
+                       f"`{rec.get('commit') or '?'}` | {files or '-'} | {install} |")
     else:
         out.append("None archived.")
     out.append("")
@@ -1721,6 +2256,8 @@ def build_parser() -> argparse.ArgumentParser:
     sel.add_argument("--category", default="", help="comma-separated categories to keep")
     sel.add_argument("--no-runtimes", action="store_true",
                      help="skip the runtimes the selection would include")
+    sel.add_argument("--no-wheels", action="store_true",
+                     help="archive runtimes without their Python wheels")
 
     beh = p.add_argument_group("download behaviour")
     beh.add_argument("--jobs", type=int, default=None, help="repos downloaded in parallel")
@@ -1811,9 +2348,16 @@ def workflow_rows(models: list[Model]) -> list[tuple[Model, Workflow]]:
     return [(m, wf) for m in models if m.usage for wf in m.usage.workflows]
 
 
+def wheels_cell(rt: Runtime, wheels: bool) -> str:
+    if rt.wheels is None:
+        return "-"
+    return rt.wheels.describe() if wheels else "skipped (--no-wheels)"
+
+
 def render_extras(models: list[Model], runtimes: list[Runtime],
                   rt_status: dict[str, RuntimeStatus] | None = None,
-                  wf_sizes: dict[tuple[str, str], int | None] | None = None) -> str:
+                  wf_sizes: dict[tuple[str, str], int | None] | None = None,
+                  wheels: bool = True) -> str:
     """Runtime and workflow tables shared by --list (offline) and --dry-run."""
     parts = []
     if runtimes:
@@ -1823,14 +2367,16 @@ def render_extras(models: list[Model], runtimes: list[Runtime],
             used_by = ", ".join(users) if len(users) <= 2 else f"{len(users)} models"
             if rt_status is None:
                 rows.append([rt.id, rt.ref, ", ".join(rt.release_assets) or "-", used_by,
-                             rt.git])
+                             wheels_cell(rt, wheels), rt.git])
                 continue
             st = rt_status[rt.id]
             state = "ERROR: " + st.error if st.error else "archived" if st.archived else "to fetch"
             assets = f"{len(st.assets)}, {human(st.asset_bytes)}" if st.assets else "-"
-            rows.append([rt.id, rt.ref, (st.commit or "?")[:12], assets, used_by, rt.git, state])
-        headers = (["ID", "REF", "COMMIT", "ASSETS", "USED BY", "GIT", "STATUS"]
-                   if rt_status is not None else ["ID", "REF", "RELEASE ASSETS", "USED BY", "GIT"])
+            rows.append([rt.id, rt.ref, (st.commit or "?")[:12], assets, used_by,
+                         wheels_cell(rt, wheels), rt.git, state])
+        headers = (["ID", "REF", "COMMIT", "ASSETS", "USED BY", "WHEELS", "GIT", "STATUS"]
+                   if rt_status is not None
+                   else ["ID", "REF", "RELEASE ASSETS", "USED BY", "WHEELS", "GIT"])
         parts.append(f"runtimes ({len(runtimes)}):\n" + render_table(headers, rows))
     wfs = workflow_rows(models)
     if wfs:
@@ -1908,7 +2454,7 @@ def cmd_list(cat: Catalog, models: list[Model], runtimes: list[Runtime], args) -
     guide = describe_guide(cat)
     if guide:
         print(f"guide: {guide}")
-    extras = render_extras(models, runtimes)
+    extras = render_extras(models, runtimes, wheels=not args.no_wheels)
     if extras:
         print("\n" + extras)
     return 0
@@ -2095,7 +2641,7 @@ def cmd_plan(cat: Catalog, models: list[Model], runtimes: list[Runtime], args,
         print(render_table(
             ["ID", "HF REPO", "FILES", "MATCHED", "TO FETCH", "GATED", "BENCH", "DEST", "NOTE"],
             table, "lllrrlrll"))
-        extras = render_extras(models, runtimes, rt_by_id, wf_sizes)
+        extras = render_extras(models, runtimes, rt_by_id, wf_sizes, wheels=not args.no_wheels)
         if extras:
             print("\n" + extras)
 
@@ -2122,6 +2668,11 @@ def cmd_plan(cat: Catalog, models: list[Model], runtimes: list[Runtime], args,
         log.info("%d runtime(s), %d already archived; %s of release assets to fetch "
                  "plus git history", len(rt_statuses),
                  sum(1 for st in rt_statuses if st.archived), human(rt_missing))
+    with_wheels = [st.runtime for st in rt_statuses if st.runtime.wheels]
+    if with_wheels and not args.no_wheels:
+        log.info("%d runtime(s) with Python wheels (%s); their size is known only once "
+                 "downloaded (a CUDA PyTorch set is several GB per platform)",
+                 len(with_wheels), ", ".join(rt.id for rt in with_wheels))
     for st in rt_statuses:
         if st.error:
             log.error("runtime %s: %s", st.runtime.id, st.error)
@@ -2185,10 +2736,14 @@ def cmd_plan(cat: Catalog, models: list[Model], runtimes: list[Runtime], args,
             log.info("runtime %s: archiving %s at %s", st.runtime.id, st.runtime.git,
                      st.runtime.ref)
     with cf.ThreadPoolExecutor(max_workers=max(1, min(4, len(rt_statuses)))) as ex:
-        rt_results = list(ex.map(lambda st: archive_runtime(st, dest), rt_statuses))
+        rt_results = list(ex.map(lambda st: archive_runtime(st, dest, not args.no_wheels),
+                                 rt_statuses))
     for res in rt_results:
         if res.status == "failed":
             log.error("runtime %s: FAILED — %s", res.runtime.id, res.message)
+        elif res.incomplete:
+            log.error("runtime %s: %s, PARTIAL (%s) — %s", res.runtime.id, res.status,
+                      res.commit, res.message)
         else:
             log.info("runtime %s: %s (%s)", res.runtime.id, res.status, res.commit)
     if rt_results:
@@ -2227,11 +2782,11 @@ def cmd_plan(cat: Catalog, models: list[Model], runtimes: list[Runtime], args,
     fresh = sum(1 for r in results if r.status == "up-to-date")
     skipped = sum(1 for r in results if r.status == "skipped-gated")
     failed = [r for r in results if r.status == "failed"]
-    rt_failed = [r for r in rt_results if r.status == "failed"]
+    rt_failed = [r for r in rt_results if r.incomplete]
     log.info("done: %d downloaded, %d already current, %d gated-skipped, %d failed",
              done, fresh, skipped, len(failed))
     if rt_results or wf_failed:
-        log.info("runtimes: %d archived or current, %d failed; workflows: %d failed",
+        log.info("runtimes: %d archived or current, %d failed or partial; workflows: %d failed",
                  len(rt_results) - len(rt_failed), len(rt_failed), len(wf_failed))
     for r in failed:
         log.error("  %s: %s", r.model.id, r.message)

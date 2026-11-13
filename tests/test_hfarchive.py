@@ -302,7 +302,8 @@ def test_minimal_starter_shows_usage_and_runtimes_commented_out(tmp_path):
         out.append(line)
     cat = hfa.load_catalog(write_config(tmp_path / "u.yaml", "\n".join(out)))
     assert cat.by_id("qwen2.5-coder-7b-gguf").usage.runtime == "llama.cpp"
-    assert [rt.id for rt in cat.runtimes] == ["llama.cpp"]
+    assert [rt.id for rt in cat.runtimes] == ["llama.cpp", "ComfyUI"]
+    assert cat.runtime_by_id("ComfyUI").wheels.platforms == ["manylinux_2_28_x86_64", "win_amd64"]
 
 
 CURATED = PROJECT_ROOT / "examples" / hfa.CURATED_CONFIG
@@ -974,8 +975,9 @@ def test_check_needs_a_destination_and_a_manifest(tmp_path):
 
 
 # ---------------------------------------------------------------- runtimes
-def make_upstream(tmp_path: Path):
-    """A local repo with an annotated tag v1 and one commit after it: (path, git)."""
+def make_upstream(tmp_path: Path, files: dict[str, str] | None = None):
+    """A local repo with an annotated tag v1 and one commit after it: (path, git).
+    `files` are added to the tagged commit."""
     if not shutil.which("git"):
         pytest.skip("git not installed")
     repo = tmp_path / "upstream"
@@ -989,6 +991,8 @@ def make_upstream(tmp_path: Path):
     repo.mkdir()
     g("init", "-q", "-b", "main")
     (repo / "main.c").write_text("int main(void) { return 0; }\n")
+    for name, text in (files or {}).items():
+        (repo / name).write_text(text)
     g("add", ".")
     g("commit", "-qm", "first")
     g("tag", "-a", "v1", "-m", "release v1")
@@ -1450,3 +1454,361 @@ def test_full_run_archives_config_and_guide_and_check_covers_them(tmp_path, monk
     assert check(dest, "--fast", "--json") == 1
     problems = json.loads(capsys.readouterr().out)["problems"]
     assert sum(p["file"].startswith("config: _hfarchive/configs/") for p in problems) == 2
+
+
+# ------------------------------------------------------------------ wheels
+WHEELS_OK = {"python": "3.12", "platforms": ["manylinux_2_28_x86_64", "win_amd64"],
+             "requirements": ["requirements.txt"]}
+
+
+def test_wheels_parse():
+    rt = hfa.Runtime.parse({"id": "c", "git": "g", "ref": "v1", "wheels": {
+        **WHEELS_OK, "packages": ["torch==2.14.1+cu130"],
+        "index_url": "https://download.pytorch.org/whl/cu130",
+        "extra_index_urls": ["https://pypi.org/simple"], "start": "python main.py"}})
+    assert rt.wheels.python == "3.12" and rt.wheels.start == "python main.py"
+    assert rt.wheels_dir(Path("/d")) == Path("/d/_runtimes/c/wheels-v1")
+    assert rt.wheels.describe() == ("py3.12: manylinux_2_28_x86_64, win_amd64; "
+                                    "1 requirement file; 1 package")
+    assert hfa.Runtime.parse({"id": "c", "git": "g"}).wheels is None
+
+
+@pytest.mark.parametrize("change, message", [
+    ({"python": 3.12}, "quoted"),
+    ({"python": "py3"}, "quoted"),
+    ({"platforms": ["linux"]}, "not supported"),
+    ({"platforms": []}, "non-empty"),
+    ({"platforms": ["win_amd64", "win_amd64"]}, "duplicates"),
+    ({"requirements": ["../x.txt"]}, "relative path"),
+    ({"requirements": ["/etc/x.txt"]}, "relative path"),
+    ({"requirements": []}, "requirements` or `packages"),
+    ({"index_url": "download.pytorch.org"}, "index_url"),
+    ({"extra_index_urls": ["ftp://x"]}, "http"),
+    ({"colour": "red"}, "unknown keys"),
+])
+def test_malformed_wheels_are_rejected(change, message):
+    with pytest.raises(hfa.CatalogError, match=message):
+        hfa.Runtime.parse({"id": "c", "git": "g", "wheels": {**WHEELS_OK, **change}})
+
+
+def test_platform_tags_map_to_uv():
+    assert hfa.uv_platform("manylinux_2_28_x86_64") == "x86_64-manylinux_2_28"
+    assert hfa.uv_platform("manylinux_2_31_aarch64") == "aarch64-manylinux_2_31"
+    assert hfa.uv_platform("manylinux2014_x86_64") == "x86_64-manylinux2014"
+    assert hfa.uv_platform("win_amd64") == "x86_64-pc-windows-msvc"
+    assert hfa.uv_platform("macosx_11_0_arm64") == "aarch64-apple-darwin"
+    assert hfa.uv_platform("linux_x86_64") is None
+
+
+def test_wheel_commands():
+    w = hfa.Wheels.parse("c", {**WHEELS_OK, "index_url": "https://i/cu130",
+                               "extra_index_urls": ["https://pypi.org/simple"]})
+    resolve = hfa.build_resolve_command("uv", w, "win_amd64", [Path("r.txt"), Path("p.txt")],
+                                        Path("out.txt"))
+    assert resolve[:3] == ["uv", "pip", "compile"]
+    joined = " ".join(resolve)
+    for part in ("--python-version 3.12", "--python-platform x86_64-pc-windows-msvc",
+                 "--only-binary :all:", "--index-url https://i/cu130",
+                 "--extra-index-url https://pypi.org/simple", "-o out.txt r.txt p.txt"):
+        assert part in joined
+    pip = ["uv", "run", "--no-project", "--with", "pip", "python", "-m", "pip"]
+    download = hfa.build_download_command(pip, w, "win_amd64", Path("lock"), Path("whl"))
+    assert download[: len(pip) + 1] == [*pip, "download"]
+    joined = " ".join(download)
+    for part in ("--no-deps", "--only-binary=:all:", "--python-version 3.12",
+                 "--platform win_amd64", "--implementation cp", "-d whl",
+                 "--index-url https://i/cu130", "-r lock"):
+        assert part in joined
+
+
+def test_wheel_tools_fall_back_to_a_uv_pip(monkeypatch):
+    monkeypatch.setattr(hfa.shutil, "which", lambda name: None)
+    assert hfa.wheel_tools()[2] and "uv" in hfa.wheel_tools()[2]
+    monkeypatch.setattr(hfa.shutil, "which", lambda name: "/bin/uv")
+    monkeypatch.setattr(hfa.importlib.util, "find_spec", lambda name: None)
+    assert hfa.wheel_tools() == (
+        "/bin/uv", ["/bin/uv", "run", "--no-project", "--with", "pip", "python", "-m", "pip"],
+        None)
+
+
+def test_requirement_specs_follow_includes(tmp_path):
+    (tmp_path / "req").mkdir()
+    (tmp_path / "req" / "common.txt").write_text("numpy>=1.25  # inline\nclick==8.1.7\n")
+    (tmp_path / "requirements.txt").write_text(
+        "# a comment\n-r req/common.txt\n--extra-index-url https://x\n\n"
+        "torch\npydantic~=2.0\nfoo @ https://x/foo.whl\nbar==1; sys_platform == 'win32'\n")
+    specs = hfa.requirement_specs(tmp_path / "requirements.txt")
+    assert specs == ["numpy>=1.25", "click==8.1.7", "torch", "pydantic~=2.0",
+                     "foo @ https://x/foo.whl", "bar==1; sys_platform == 'win32'"]
+    assert [s for s in specs if not hfa.is_pinned(s)] == ["numpy>=1.25", "torch",
+                                                          "pydantic~=2.0"]
+    assert hfa.wheel_name_version("Torch-2.14.1+cu130-cp312-cp312-win_amd64.whl") == (
+        "torch", "2.14.1+cu130")
+
+
+# A fake index: what the resolver and pip download can find.
+AVAILABLE = {"click": "8.1.7", "colorama": "0.4.6", "numpy": "2.5.4"}
+
+
+def fake_run_tool(calls, fail_download=()):
+    """uv pip compile and pip download against AVAILABLE; Windows adds colorama,
+    as click's `platform_system == "Windows"` marker does."""
+    def run(cmd):
+        calls.append(cmd)
+        if cmd[1:3] == ["pip", "compile"]:
+            out = Path(cmd[cmd.index("-o") + 1])
+            specs = [s for f in cmd[cmd.index("-o") + 2:] for s in hfa.requirement_specs(Path(f))]
+            names = [re.split(r"[=<>~ ;\[]", s)[0].lower() for s in specs]
+            missing = [n for n in names if n not in AVAILABLE]
+            if missing:
+                return 1, f"  × No solution found\n  ╰─▶ Because {missing[0]} was not found\n"
+            if "windows" in cmd[cmd.index("--python-platform") + 1]:
+                names.append("colorama")
+            out.write_text("".join(f"{n}=={AVAILABLE[n]}\n" for n in sorted(set(names))))
+            return 0, ""
+        assert cmd[:2] == ["pip", "download"], cmd
+        d = Path(cmd[cmd.index("-d") + 1])
+        for name, ver in hfa.read_pins(Path(cmd[cmd.index("-r") + 1])).items():
+            if name not in fail_download:
+                (d / f"{name}-{ver}-py3-none-any.whl").write_bytes(f"{name} {ver}".encode())
+        return (1, "ERROR: connection reset") if fail_download else (0, "")
+    return run
+
+
+def make_python_upstream(tmp_path: Path, requirements: str) -> Path:
+    return make_upstream(tmp_path, {"requirements.txt": requirements})[0]
+
+
+@pytest.fixture
+def wheels_env(tmp_path, monkeypatch):
+    calls: list[list[str]] = []
+    monkeypatch.setattr(hfa, "wheel_tools", lambda: ("uv", ["pip"], None))
+    monkeypatch.setattr(hfa, "run_tool", fake_run_tool(calls))
+    dest = tmp_path / "drive"
+    dest.mkdir()
+    return dest, calls
+
+
+def python_runtime(up: Path, **wheels) -> hfa.Runtime:
+    return hfa.Runtime.parse({"id": "app", "git": str(up), "ref": "v1", "wheels": {
+        **WHEELS_OK, "packages": ["numpy==2.5.4"], "start": "python main.py", **wheels}})
+
+
+def test_wheels_layout_lock_install_md_and_check(tmp_path, wheels_env):
+    dest, calls = wheels_env
+    up = make_python_upstream(tmp_path, "click\n")
+    rt = python_runtime(up)
+    res = hfa.archive_runtime(hfa.probe_runtime(rt, dest, {}), dest)
+    assert res.status == "downloaded", res.message
+    root = dest / "_runtimes" / "app" / "wheels-v1"
+    linux, win = root / "manylinux_2_28_x86_64", root / "win_amd64"
+    assert sorted(p.name for p in linux.iterdir()) == [
+        "click-8.1.7-py3-none-any.whl", "numpy-2.5.4-py3-none-any.whl", "requirements.lock.txt"]
+    assert (win / "colorama-0.4.6-py3-none-any.whl").is_file()
+
+    # the requirements were read from the archived source at the pinned commit
+    compile_inputs = calls[0][calls[0].index("-o") + 2:]
+    assert compile_inputs[0].endswith("app-v1/requirements.txt")
+
+    lock = (linux / "requirements.lock.txt").read_text()
+    sha = hashlib.sha256(b"click 8.1.7").hexdigest()
+    assert f"click==8.1.7 --hash=sha256:{sha}" in lock
+    assert "numpy==2.5.4 --hash=sha256:" in lock and "colorama" not in lock
+
+    install = (root / "INSTALL.md").read_text()
+    assert ("app-v1/.venv/bin/python -m pip install --no-index --find-links "
+            "wheels-v1/manylinux_2_28_x86_64 -r wheels-v1/manylinux_2_28_x86_64/"
+            "requirements.lock.txt") in install
+    assert "python3.12 -m venv app-v1/.venv" in install
+    assert "py -3.12 -m venv app-v1\\.venv" in install
+    assert "app-v1\\.venv\\Scripts\\python -m pip install --no-index" in install
+    assert "tar -xzf app-v1-src.tar.gz" in install
+    assert "## Unpinned requirements" in install and "- `click`" in install
+    assert install.rstrip().endswith("python main.py")
+
+    w = res.wheels
+    assert res.status == "downloaded" and not res.incomplete
+    assert w["status"] == "complete" and w["python"] == "3.12" and w["unpinned"] == ["click"]
+    assert w["install"]["path"] == "_runtimes/app/wheels-v1/INSTALL.md"
+    assert hfa.wheel_stats(w["platforms"]["win_amd64"]) == (3, 36)
+    wheel_arts = [a for a in hfa.wheel_artifacts(w) if a["kind"] == "wheel"]
+    assert len(wheel_arts) == 5 and all(len(a["sha256"]) == 64 for a in wheel_arts)
+    assert not any(a["kind"].startswith("wheel") for a in res.artifacts)
+
+    hfa.manifest_write(dest, hfa.runtime_records([res], dest))
+    assert check(dest) == 0
+    flip_one_byte(linux / "click-8.1.7-py3-none-any.whl")
+    assert check(dest) == 1
+
+    index = hfa.index_markdown(hfa.manifest_read(dest))
+    assert "[INSTALL.md](<_runtimes/app/wheels-v1/INSTALL.md>)" in index
+    assert "manylinux_2_28_x86_64 complete" in index
+    assert ".whl" not in index  # wheels are reached through INSTALL.md
+
+
+def test_wheels_are_skipped_when_lock_and_wheels_match(tmp_path, wheels_env, monkeypatch):
+    dest, calls = wheels_env
+    rt = python_runtime(make_python_upstream(tmp_path, "click==8.1.7\n"))
+    first = hfa.archive_runtime(hfa.probe_runtime(rt, dest, {}), dest)
+    hfa.manifest_write(dest, hfa.runtime_records([first], dest))
+    n = len(calls)
+
+    again = hfa.probe_runtimes([rt], dest)[0]
+    assert again.archived
+    with monkeypatch.context() as m:
+        m.setattr(hfa, "git", lambda *a: pytest.fail("must not run git"))
+        second = hfa.archive_runtime(again, dest)
+    assert len(calls) == n  # neither resolved nor downloaded again
+    assert second.status == "up-to-date" and second.wheels["status"] == "complete"
+    assert second.wheels["platforms"] == first.wheels["platforms"]
+
+    # a wheel that went missing brings back that platform only
+    (dest / "_runtimes/app/wheels-v1/win_amd64/colorama-0.4.6-py3-none-any.whl").unlink()
+    hfa.manifest_write(dest, hfa.runtime_records([second], dest))
+    third = hfa.archive_runtime(hfa.probe_runtimes([rt], dest)[0], dest)
+    platforms = [c[c.index("--python-platform") + 1] for c in calls[n:] if "compile" in c]
+    assert platforms == ["x86_64-pc-windows-msvc"]
+    assert third.wheels["status"] == "complete"
+
+    # a changed config is downloaded again
+    changed = python_runtime(Path(rt.git), packages=["numpy==2.5.4", "colorama"])
+    hfa.manifest_write(dest, hfa.runtime_records([third], dest))
+    m = len(calls)
+    hfa.archive_runtime(hfa.probe_runtimes([changed], dest)[0], dest)
+    assert sum("compile" in c for c in calls[m:]) == 2
+
+
+def test_unavailable_requirements_make_the_runtime_partial(tmp_path, wheels_env):
+    dest, calls = wheels_env
+    rt = python_runtime(make_python_upstream(tmp_path, "click\nnot-on-any-index==1.0\n"))
+    res = hfa.archive_runtime(hfa.probe_runtime(rt, dest, {}), dest)
+    assert res.status == "downloaded" and res.incomplete
+    assert res.wheels["status"] == "partial"
+    assert "not available as wheels: not-on-any-index==1.0" in res.message
+    plat = res.wheels["platforms"]["manylinux_2_28_x86_64"]
+    assert plat["status"] == "partial" and hfa.wheel_stats(plat)[0] == 2
+    assert plat["unavailable"][0]["error"] == "No solution found | Because not-on-any-index was not found"
+    lock = (dest / "_runtimes/app/wheels-v1/manylinux_2_28_x86_64/requirements.lock.txt").read_text()
+    assert "# not available as a wheel: not-on-any-index==1.0" in lock
+    assert "click==8.1.7" in lock
+    install = (dest / res.wheels["install"]["path"]).read_text()
+    assert "Not in this wheelhouse" in install and "`not-on-any-index==1.0`" in install
+
+    # a partial runtime is recorded, checked and retried on the next run
+    hfa.manifest_write(dest, hfa.runtime_records([res], dest))
+    assert check(dest) == 0
+    n = len(calls)
+    again = hfa.archive_runtime(hfa.probe_runtimes([rt], dest)[0], dest)
+    assert again.status == "up-to-date" and again.incomplete and len(calls) > n
+
+
+def test_failed_downloads_and_missing_requirement_files(tmp_path, wheels_env, monkeypatch):
+    dest, calls = wheels_env
+    up = make_python_upstream(tmp_path, "click\n")
+    monkeypatch.setattr(hfa, "run_tool", fake_run_tool(calls, fail_download={"numpy"}))
+    res = hfa.archive_runtime(hfa.probe_runtime(python_runtime(up), dest, {}), dest)
+    plat = res.wheels["platforms"]["manylinux_2_28_x86_64"]
+    assert res.incomplete and plat["missing"] == ["numpy"]
+    assert "connection reset" in plat["message"]
+
+    gone = python_runtime(up, requirements=["nope/requirements.txt"])
+    res = hfa.archive_runtime(hfa.probe_runtime(gone, tmp_path / "other", {}), tmp_path / "other")
+    assert res.incomplete and res.wheels["status"] == "failed"
+    assert "nope/requirements.txt is not in the source at v1" in res.message
+    assert "Not archived:" in (tmp_path / "other" / res.wheels["install"]["path"]).read_text()
+
+
+def test_no_wheels_keeps_what_is_archived(tmp_path, wheels_env):
+    dest, calls = wheels_env
+    rt = python_runtime(make_python_upstream(tmp_path, "click\n"))
+    skipped = hfa.archive_runtime(hfa.probe_runtime(rt, dest, {}), dest, wheels=False)
+    assert skipped.wheels is None and not calls
+    assert not (dest / "_runtimes/app/wheels-v1").exists()
+
+    first = hfa.archive_runtime(hfa.probe_runtime(rt, dest, {}), dest)
+    hfa.manifest_write(dest, hfa.runtime_records([first], dest))
+    n = len(calls)
+    kept = hfa.archive_runtime(hfa.probe_runtimes([rt], dest)[0], dest, wheels=False)
+    assert len(calls) == n and kept.wheels == first.wheels
+
+
+WHEELS_CONFIG = """\
+runtimes:
+  - id: comfyui
+    git: https://github.com/Comfy-Org/ComfyUI
+    ref: v0.45.0
+    wheels:
+      python: "3.12"
+      platforms: [manylinux_2_28_x86_64, win_amd64]
+      requirements: [requirements.txt]
+      packages: ["torch==2.14.1+cu130"]
+models:
+  - id: flux
+    hf_repo: org/flux
+    category: image
+    usage: {runtime: comfyui}
+"""
+
+
+def test_cli_list_shows_wheels(tmp_path, capsys):
+    cfg = str(write_config(tmp_path / "w.yaml", WHEELS_CONFIG))
+    assert hfa.main(["--config", cfg, "--list"]) == 0
+    out = capsys.readouterr().out
+    assert "WHEELS" in out
+    assert "py3.12: manylinux_2_28_x86_64, win_amd64; 1 requirement file; 1 package" in out
+    assert hfa.main(["--config", cfg, "--list", "--no-wheels"]) == 0
+    assert "skipped (--no-wheels)" in capsys.readouterr().out
+    assert hfa.main(["--config", cfg, "--list", "--json"]) == 0
+    data = json.loads(capsys.readouterr().out)
+    assert data["runtimes"][0]["wheels"]["packages"] == ["torch==2.14.1+cu130"]
+
+
+def test_curated_python_runtimes_pin_wheels():
+    cat = hfa.load_catalog(CURATED)
+    with_wheels = {rt.id: rt.wheels for rt in cat.runtimes if rt.wheels}
+    assert set(with_wheels) == {"ComfyUI", "ComfyUI-GGUF", "ComfyUI-GGUF-molbal", "vllm",
+                                "transformers"}
+    assert {w.python for w in with_wheels.values()} == {"3.12"}
+    comfy = with_wheels["ComfyUI"]
+    assert comfy.platforms == ["manylinux_2_28_x86_64", "win_amd64"]
+    assert comfy.requirements == ["requirements.txt"]
+    assert any(p.startswith("torch==") and "+cu" in p for p in comfy.packages)
+    assert comfy.index_url.startswith("https://download.pytorch.org/whl/cu")
+    for rid in ("ComfyUI-GGUF", "ComfyUI-GGUF-molbal"):
+        assert with_wheels[rid].requirements == ["requirements.txt"]
+    assert all(w.start for w in with_wheels.values())
+
+
+def test_full_run_with_partial_wheels_exits_1(tmp_path, wheels_env, monkeypatch):
+    dest, calls = wheels_env
+    up = make_python_upstream(tmp_path, "click\nnot-on-any-index==1.0\n")
+    body = (WHEELS_CONFIG.replace("https://github.com/Comfy-Org/ComfyUI", str(up))
+            .replace("ref: v0.45.0", "ref: v1")
+            .replace('packages: ["torch==2.14.1+cu130"]', 'packages: ["numpy==2.5.4"]'))
+    cfg = write_config(tmp_path / "w.yaml", body)
+    flux = hfa.load_catalog(cfg).by_id("flux")
+    readme = b"# flux\n"
+    st = hfa.RepoStatus(model=flux, exists=True, commit="f" * 40,
+                        files=[("README.md", len(readme))],
+                        hashes={"README.md": {"git_sha1": git_blob_sha1(readme)}})
+    monkeypatch.setattr(hfa, "probe_all", lambda models: [st])
+    monkeypatch.setattr(hfa, "resolve_hf_bin", lambda: "hf")
+
+    def fake_hf(cmd):
+        (Path(cmd[cmd.index("--local-dir") + 1]) / "README.md").write_bytes(readme)
+        return 0, ""
+
+    monkeypatch.setattr(hfa, "_run_hf", fake_hf)
+    args = ["--config", str(cfg), "--dest", str(dest), "--allow-home-dest", "--min-free-gb", "0"]
+    assert hfa.main(args) == 1
+    rec = hfa.latest_records(hfa.manifest_read(dest), "runtime")["comfyui"]
+    assert rec["status"] == "downloaded" and rec["wheels"]["status"] == "partial"
+    assert "INSTALL.md" in (dest / "INDEX.md").read_text()
+    assert check(dest) == 0
+
+    n = len(calls)
+    assert hfa.main(args + ["--no-wheels"]) == 0
+    assert len(calls) == n
+    rec = hfa.latest_records(hfa.manifest_read(dest), "runtime")["comfyui"]
+    assert rec["wheels"]["status"] == "partial"  # still recorded, still checked
+    assert check(dest) == 0
