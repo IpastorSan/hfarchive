@@ -94,6 +94,16 @@ Pin every runtime in `runtimes:` to a release tag (or a commit when there are no
 
 All repos must report OK. Report totals per profile and keep `core` to a size that fits one common drive with room for a second copy (the 2026-11 set: ~880 GB core, ~2.2 TB all). Then point `--init`'s curated-file constant at the new file.
 
+### 7. Write the models guide
+
+Every selection ships with `docs/models-YYYY-MM.md`, linked from the README. It holds:
+- The hardware tiers in plain language: typical GPUs and RAM per tier, VRAM vs RAM, dense vs MoE, rough speeds marked as estimates.
+- One table per category (general, coding, security, uncensored, decision, image, video). Each row gives the model, its total and active params, the tiers it runs on, the archived quant and size, what it is best at, and 3–5 headline benchmarks. Use one consistent benchmark set per table and "—" where no number exists; never invent one.
+- A comparison of the best open models with the current closed frontier (the latest Claude, OpenAI and Google flagships) on the same benchmarks, saying plainly where open models are close and where they lag.
+- Caveats: published scores are at full precision, so the archived Q3/Q4/IQ1 quants score lower. Mark self-reported numbers as such, and give each number a source and a date.
+
+Benchmark sources, in order: model cards, official tech reports, Artificial Analysis, LMArena. Prefer the benchmarks most widely reported at the time (in 2026-11: MMLU-Pro, GPQA Diamond, Humanity's Last Exam, AIME, LiveCodeBench, SWE-bench Verified, Terminal-Bench 2.x, τ²-bench, the Artificial Analysis Intelligence Index; arena Elo for image and video).
+
 ## Writing style
 
 The README and example comments are public. Plain, concrete sentences; no marketing; no personal names or machines; no text addressed to an AI outside this file.
