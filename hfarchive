@@ -1868,7 +1868,7 @@ def cmd_plan(cat: Catalog, models: list[Model], runtimes: list[Runtime], args,
     gated_skips = [r for r in rows if r["status"].gated and not have_token]
     broken = [r for r in rows if not r["status"].exists]
 
-    print()
+    print(flush=True)  # stdout is buffered; keep the table ahead of the log lines when both are redirected
     log.info("catalogued %s across %d repos; %s still to fetch",
              human(total_matched), len(rows), human(total_missing))
     if gated_skips:
