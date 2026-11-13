@@ -1812,3 +1812,11 @@ def test_full_run_with_partial_wheels_exits_1(tmp_path, wheels_env, monkeypatch)
     rec = hfa.latest_records(hfa.manifest_read(dest), "runtime")["comfyui"]
     assert rec["wheels"]["status"] == "partial"  # still recorded, still checked
     assert check(dest) == 0
+
+
+def test_selection_flags_accept_repeats_and_commas():
+    assert hfa.csv_list(["a,b", "c", " d , "]) == ["a", "b", "c", "d"]
+    assert hfa.csv_list("a,b") == ["a", "b"]
+    assert hfa.csv_list([]) == []
+    args = hfa.build_parser().parse_args(["--only", "a,b", "--only", "c"])
+    assert hfa.csv_list(args.only) == ["a", "b", "c"]

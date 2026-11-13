@@ -2250,10 +2250,10 @@ def build_parser() -> argparse.ArgumentParser:
                       help="with --check: compare sizes only, skip hashing")
 
     sel = p.add_argument_group("selection")
-    sel.add_argument("--only", default="", help="comma-separated model ids to use instead of the profile")
-    sel.add_argument("--exclude", default="", help="comma-separated model ids to drop")
-    sel.add_argument("--enable", default="", help="comma-separated ids to force in even if disabled")
-    sel.add_argument("--category", default="", help="comma-separated categories to keep")
+    sel.add_argument("--only", action="append", default=[], help="comma-separated model ids to use instead of the profile; repeatable")
+    sel.add_argument("--exclude", action="append", default=[], help="comma-separated model ids to drop; repeatable")
+    sel.add_argument("--enable", action="append", default=[], help="comma-separated ids to force in even if disabled; repeatable")
+    sel.add_argument("--category", action="append", default=[], help="comma-separated categories to keep; repeatable")
     sel.add_argument("--no-runtimes", action="store_true",
                      help="skip the runtimes the selection would include")
     sel.add_argument("--no-wheels", action="store_true",
@@ -2280,8 +2280,11 @@ def build_parser() -> argparse.ArgumentParser:
     return p
 
 
-def csv_list(value: str) -> list[str]:
-    return [v.strip() for v in value.split(",") if v.strip()]
+def csv_list(values: list[str] | str) -> list[str]:
+    """Flatten repeated and comma-separated flag values: --only a,b --only c -> [a, b, c]."""
+    if isinstance(values, str):
+        values = [values]
+    return [v.strip() for value in values for v in value.split(",") if v.strip()]
 
 
 def log_dir() -> Path:
