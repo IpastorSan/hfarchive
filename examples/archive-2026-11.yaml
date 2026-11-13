@@ -238,6 +238,47 @@ models:
         8 GB: llama-server -m UD-Q3_K_XL/<first shard> --mmproj mmproj-F16.gguf
         -c 32768 --n-cpu-moe 99 (all experts in RAM; lower N until VRAM is full)
         (estimate); ~96 GB RAM.
+    benchmarks:
+      - name: "SWE-bench Pro"
+        score: 62.5
+        source: https://huggingface.co/Qwen/Qwen3.8-Flash-Next
+        date: 2026-11-13
+        note: "self-reported; Claude Code harness"
+      - name: "SWE-bench Verified"
+        score: 78.7
+        source: https://huggingface.co/nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-BF16
+        date: 2026-11-13
+        note: "measured by NVIDIA (Nemotron 3.5 card)"
+      - name: "DeepSWE 1.1"
+        score: 58.7
+        source: https://huggingface.co/Qwen/Qwen3.8-Flash-Next
+        date: 2026-11-13
+        note: "self-reported; best of Claude Code and mini-SWE-agent"
+      - name: "Terminal-Bench 2.1"
+        score: 86.1
+        source: https://artificialanalysis.ai/leaderboards/models
+        date: 2026-11-13
+        note: "measured by Artificial Analysis; Terminus 2"
+      - name: "Terminal-Bench 4.0"
+        score: 25.3
+        source: https://artificialanalysis.ai/leaderboards/models
+        date: 2026-11-13
+        note: "measured by Artificial Analysis; mini-swe-agent"
+      - name: "FrontierCode 2.0"
+        score: 27.1
+        source: https://artificialanalysis.ai/leaderboards/models
+        date: 2026-11-13
+        note: "measured by Artificial Analysis; Stirrup harness"
+      - name: "LiveCodeBench v6"
+        score: 91.9
+        source: https://huggingface.co/Qwen/Qwen3.8-Flash-Next
+        date: 2026-11-13
+        note: "self-reported"
+      - name: "AA Intelligence Index v5.0.1"
+        score: 28.6
+        source: https://artificialanalysis.ai/leaderboards/models
+        date: 2026-11-13
+        note: "measured by Artificial Analysis"
 
   - id: qwen3.8-flash-next-ud-iq4xs
     hf_repo: unsloth/Qwen3.8-Flash-Next-GGUF
@@ -262,6 +303,47 @@ models:
         | low; preserve_thinking is on. Context 262,144 native. 16 GB: same
         command as the UD-Q3_K_XL entry with the UD-IQ4_XS shards, fewer
         --n-cpu-moe layers (estimate); ~96 GB RAM.
+    benchmarks:
+      - name: "SWE-bench Pro"
+        score: 62.5
+        source: https://huggingface.co/Qwen/Qwen3.8-Flash-Next
+        date: 2026-11-13
+        note: "self-reported; Claude Code harness"
+      - name: "SWE-bench Verified"
+        score: 78.7
+        source: https://huggingface.co/nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-BF16
+        date: 2026-11-13
+        note: "measured by NVIDIA (Nemotron 3.5 card)"
+      - name: "DeepSWE 1.1"
+        score: 58.7
+        source: https://huggingface.co/Qwen/Qwen3.8-Flash-Next
+        date: 2026-11-13
+        note: "self-reported; best of Claude Code and mini-SWE-agent"
+      - name: "Terminal-Bench 2.1"
+        score: 86.1
+        source: https://artificialanalysis.ai/leaderboards/models
+        date: 2026-11-13
+        note: "measured by Artificial Analysis; Terminus 2"
+      - name: "Terminal-Bench 4.0"
+        score: 25.3
+        source: https://artificialanalysis.ai/leaderboards/models
+        date: 2026-11-13
+        note: "measured by Artificial Analysis; mini-swe-agent"
+      - name: "FrontierCode 2.0"
+        score: 27.1
+        source: https://artificialanalysis.ai/leaderboards/models
+        date: 2026-11-13
+        note: "measured by Artificial Analysis; Stirrup harness"
+      - name: "LiveCodeBench v6"
+        score: 91.9
+        source: https://huggingface.co/Qwen/Qwen3.8-Flash-Next
+        date: 2026-11-13
+        note: "self-reported"
+      - name: "AA Intelligence Index v5.0.1"
+        score: 28.6
+        source: https://artificialanalysis.ai/leaderboards/models
+        date: 2026-11-13
+        note: "measured by Artificial Analysis"
 
   - id: glm-5.3-flash-ud-iq1s
     hf_repo: unsloth/GLM-5.3-Flash-GGUF
@@ -287,6 +369,47 @@ models:
         (config.json). 8 GB: llama-server -m UD-IQ1_S/<first shard> --mmproj
         mmproj-F16.gguf -c 32768 --n-cpu-moe 99 (estimate); ~100 GB RAM, a
         few tok/s.
+    benchmarks:
+      - name: "SWE-bench Verified"
+        score: 79.1
+        source: https://huggingface.co/nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-BF16
+        date: 2026-11-13
+        note: "measured by NVIDIA (Nemotron 3.5 card)"
+      - name: "SWE-bench Pro"
+        score: 59.7
+        source: https://huggingface.co/nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-BF16
+        date: 2026-11-13
+        note: "measured by NVIDIA (Nemotron 3.5 card)"
+      - name: "DeepSWE 1.1"
+        score: 63.4
+        source: https://huggingface.co/zai-org/GLM-5.3-Flash
+        date: 2026-11-13
+        note: "self-reported; mini-swe-agent"
+      - name: "Terminal-Bench 2.1"
+        score: 84.3
+        source: https://huggingface.co/zai-org/GLM-5.3-Flash
+        date: 2026-11-13
+        note: "self-reported; Claude Code 2.1.207"
+      - name: "Terminal-Bench 4.0"
+        score: 32.8
+        source: https://artificialanalysis.ai/leaderboards/models
+        date: 2026-11-13
+        note: "measured by Artificial Analysis; mini-swe-agent"
+      - name: "LiveCodeBench v6"
+        score: 80.6
+        source: https://huggingface.co/nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-BF16
+        date: 2026-11-13
+        note: "measured by NVIDIA (Nemotron 3.5 card)"
+      - name: "GPQA Diamond"
+        score: 91.2
+        source: https://artificialanalysis.ai/leaderboards/models
+        date: 2026-11-13
+        note: "measured by Artificial Analysis"
+      - name: "AA Intelligence Index v5.0.1"
+        score: 27.8
+        source: https://artificialanalysis.ai/leaderboards/models
+        date: 2026-11-13
+        note: "measured by Artificial Analysis"
 
   - id: glm-5.3-flash-ud-q2kxl
     hf_repo: unsloth/GLM-5.3-Flash-GGUF
@@ -309,6 +432,47 @@ models:
         pass --chat-template-kwargs '{"clear_thinking":true}'. Context 1,048,576
         (config.json). 24 GB: same command as glm-5.3-flash-ud-iq1s with the
         UD-Q2_K_XL shards and fewer --n-cpu-moe layers (estimate); ~124 GB RAM.
+    benchmarks:
+      - name: "SWE-bench Verified"
+        score: 79.1
+        source: https://huggingface.co/nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-BF16
+        date: 2026-11-13
+        note: "measured by NVIDIA (Nemotron 3.5 card)"
+      - name: "SWE-bench Pro"
+        score: 59.7
+        source: https://huggingface.co/nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-BF16
+        date: 2026-11-13
+        note: "measured by NVIDIA (Nemotron 3.5 card)"
+      - name: "DeepSWE 1.1"
+        score: 63.4
+        source: https://huggingface.co/zai-org/GLM-5.3-Flash
+        date: 2026-11-13
+        note: "self-reported; mini-swe-agent"
+      - name: "Terminal-Bench 2.1"
+        score: 84.3
+        source: https://huggingface.co/zai-org/GLM-5.3-Flash
+        date: 2026-11-13
+        note: "self-reported; Claude Code 2.1.207"
+      - name: "Terminal-Bench 4.0"
+        score: 32.8
+        source: https://artificialanalysis.ai/leaderboards/models
+        date: 2026-11-13
+        note: "measured by Artificial Analysis; mini-swe-agent"
+      - name: "LiveCodeBench v6"
+        score: 80.6
+        source: https://huggingface.co/nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-BF16
+        date: 2026-11-13
+        note: "measured by NVIDIA (Nemotron 3.5 card)"
+      - name: "GPQA Diamond"
+        score: 91.2
+        source: https://artificialanalysis.ai/leaderboards/models
+        date: 2026-11-13
+        note: "measured by Artificial Analysis"
+      - name: "AA Intelligence Index v5.0.1"
+        score: 27.8
+        source: https://artificialanalysis.ai/leaderboards/models
+        date: 2026-11-13
+        note: "measured by Artificial Analysis"
 
   - id: glm-5.3-ud-iq1s
     hf_repo: unsloth/GLM-5.3-GGUF
@@ -333,6 +497,47 @@ models:
         pass --chat-template-kwargs '{"clear_thinking":true}'. Context 1,048,576
         (config.json). Text only. Needs 256 GB+ RAM (or several GPUs):
         llama-server -m UD-IQ1_S/<first shard> --n-cpu-moe 99 (estimate).
+    benchmarks:
+      - name: "DeepSWE 1.1"
+        score: 66.9
+        source: https://huggingface.co/zai-org/GLM-5.3
+        date: 2026-11-13
+        note: "self-reported; mini-swe-agent"
+      - name: "Terminal-Bench 2.1"
+        score: 88.2
+        source: https://huggingface.co/zai-org/GLM-5.3
+        date: 2026-11-13
+        note: "self-reported; Claude Code 2.1.207"
+      - name: "Terminal-Bench 4.0"
+        score: 41.9
+        source: https://artificialanalysis.ai/leaderboards/models
+        date: 2026-11-13
+        note: "measured by Artificial Analysis; max effort; mini-swe-agent"
+      - name: "SciCode"
+        score: 59.0
+        source: https://artificialanalysis.ai/leaderboards/models
+        date: 2026-11-13
+        note: "measured by Artificial Analysis; max effort"
+      - name: "GPQA Diamond"
+        score: 91.7
+        source: https://artificialanalysis.ai/leaderboards/models
+        date: 2026-11-13
+        note: "measured by Artificial Analysis; max effort"
+      - name: "Humanity's Last Exam"
+        score: 42.3
+        source: https://artificialanalysis.ai/leaderboards/models
+        date: 2026-11-13
+        note: "measured by Artificial Analysis; max effort"
+      - name: "Humanity's Last Exam (with tools)"
+        score: 62.5
+        source: https://huggingface.co/zai-org/GLM-5.3
+        date: 2026-11-13
+        note: "self-reported"
+      - name: "AA Intelligence Index v5.0.1"
+        score: 31.7
+        source: https://artificialanalysis.ai/leaderboards/models
+        date: 2026-11-13
+        note: "measured by Artificial Analysis; max effort"
 
   - id: gpt-oss-120b-f16
     hf_repo: unsloth/gpt-oss-120b-GGUF
@@ -360,6 +565,42 @@ models:
         1.0, top_p 1.0 (estimate, from OpenAI's gpt-oss repo). Context 131,072
         (config.json). 8 GB: llama-server -m gpt-oss-120b-F16.gguf -c 32768
         --n-cpu-moe 36 (estimate); ~64 GB RAM.
+    benchmarks:
+      - name: "Terminal-Bench 2.1"
+        score: 26.2
+        source: https://artificialanalysis.ai/leaderboards/models
+        date: 2026-11-13
+        note: "measured by Artificial Analysis; high effort; Terminus 2"
+      - name: "Terminal-Bench 4.0"
+        score: 0.0
+        source: https://artificialanalysis.ai/leaderboards/models
+        date: 2026-11-13
+        note: "measured by Artificial Analysis; high effort; mini-swe-agent"
+      - name: "LiveCodeBench v6"
+        score: 82.7
+        source: https://huggingface.co/Qwen/Qwen3.5-9B
+        date: 2026-11-13
+        note: "measured by Qwen (Qwen3.5-9B card)"
+      - name: "SciCode"
+        score: 34.0
+        source: https://artificialanalysis.ai/leaderboards/models
+        date: 2026-11-13
+        note: "measured by Artificial Analysis; high effort"
+      - name: "GPQA Diamond"
+        score: 78.2
+        source: https://artificialanalysis.ai/leaderboards/models
+        date: 2026-11-13
+        note: "measured by Artificial Analysis; high effort"
+      - name: "Humanity's Last Exam"
+        score: 19.6
+        source: https://artificialanalysis.ai/leaderboards/models
+        date: 2026-11-13
+        note: "measured by Artificial Analysis; high effort"
+      - name: "AA Intelligence Index v5.0.1"
+        score: 3.8
+        source: https://artificialanalysis.ai/leaderboards/models
+        date: 2026-11-13
+        note: "measured by Artificial Analysis; high effort"
 
   - id: qwen3-coder-next-ud-q4kxl
     hf_repo: unsloth/Qwen3-Coder-Next-GGUF
@@ -381,6 +622,37 @@ models:
         card suggests 32,768 if memory runs out. 8 GB: llama-server -m
         Qwen3-Coder-Next-UD-Q4_K_XL.gguf -c 32768 --n-cpu-moe 99 (estimate);
         ~48 GB RAM.
+    benchmarks:
+      - name: "SWE-bench Verified"
+        score: 70.6
+        source: https://huggingface.co/Qwen/Qwen3-Coder-Next
+        date: 2026-11-13
+        note: "self-reported; SWE-Agent"
+      - name: "SWE-bench Pro"
+        score: 44.3
+        source: https://huggingface.co/Qwen/Qwen3-Coder-Next
+        date: 2026-11-13
+        note: "self-reported; SWE-Agent"
+      - name: "Terminal-Bench 2.0"
+        score: 36.2
+        source: https://huggingface.co/Qwen/Qwen3-Coder-Next
+        date: 2026-11-13
+        note: "self-reported; Terminus 2 (JSON)"
+      - name: "Aider"
+        score: 66.2
+        source: https://huggingface.co/Qwen/Qwen3-Coder-Next
+        date: 2026-11-13
+        note: "self-reported"
+      - name: "Terminal-Bench 4.0"
+        score: 0.0
+        source: https://artificialanalysis.ai/leaderboards/models
+        date: 2026-11-13
+        note: "measured by Artificial Analysis; mini-swe-agent"
+      - name: "SciCode"
+        score: 36.2
+        source: https://artificialanalysis.ai/leaderboards/models
+        date: 2026-11-13
+        note: "measured by Artificial Analysis"
 
   - id: qwen3.6-35b-a3b-ud-q4kxl
     hf_repo: unsloth/Qwen3.6-35B-A3B-GGUF
@@ -405,6 +677,47 @@ models:
         card advises at least 128K to keep thinking quality. 24 GB: all on GPU.
         8 GB: --n-cpu-moe 99 -c 32768 (estimate); ~20 GB RAM. Vision: --mmproj
         mmproj-F16.gguf.
+    benchmarks:
+      - name: "SWE-bench Verified"
+        score: 73.4
+        source: https://huggingface.co/Qwen/Qwen3.6-35B-A3B
+        date: 2026-11-13
+        note: "self-reported; Qwen internal scaffold (bash + file edit)"
+      - name: "SWE-bench Pro"
+        score: 49.5
+        source: https://huggingface.co/Qwen/Qwen3.6-35B-A3B
+        date: 2026-11-13
+        note: "self-reported; Qwen internal scaffold"
+      - name: "Terminal-Bench 2.0"
+        score: 51.5
+        source: https://huggingface.co/Qwen/Qwen3.6-35B-A3B
+        date: 2026-11-13
+        note: "self-reported; Terminus 2"
+      - name: "Terminal-Bench 4.0"
+        score: 0.0
+        source: https://artificialanalysis.ai/leaderboards/models
+        date: 2026-11-13
+        note: "measured by Artificial Analysis; reasoning; mini-swe-agent"
+      - name: "LiveCodeBench v6"
+        score: 80.4
+        source: https://huggingface.co/Qwen/Qwen3.6-35B-A3B
+        date: 2026-11-13
+        note: "self-reported"
+      - name: "SciCode"
+        score: 36.6
+        source: https://artificialanalysis.ai/leaderboards/models
+        date: 2026-11-13
+        note: "measured by Artificial Analysis; reasoning"
+      - name: "GPQA Diamond"
+        score: 86.0
+        source: https://huggingface.co/Qwen/Qwen3.6-35B-A3B
+        date: 2026-11-13
+        note: "self-reported"
+      - name: "Humanity's Last Exam"
+        score: 21.4
+        source: https://huggingface.co/Qwen/Qwen3.6-35B-A3B
+        date: 2026-11-13
+        note: "self-reported"
 
   - id: nex-n2.5-mini-q4km
     hf_repo: abenzerps/Nex-N2.5-mini-GGUF
@@ -429,6 +742,22 @@ models:
         chat_template.jinja is a copy for --chat-template-file. Context up to
         262,144 (GGUF card example -c 8192). 8 GB: --n-cpu-moe 99 (estimate).
         Vision: --mmproj mmproj-Nex-N2.5-mini-F16.gguf.
+    benchmarks:
+      - name: "SWE-bench Pro"
+        score: 43.8
+        source: https://huggingface.co/nex-agi/Nex-N2.5-mini
+        date: 2026-11-13
+        note: "self-reported; NexAU harness"
+      - name: "DeepSWE 1.1"
+        score: 36.1
+        source: https://huggingface.co/nex-agi/Nex-N2.5-mini
+        date: 2026-11-13
+        note: "self-reported; NexAU harness"
+      - name: "Terminal-Bench 2.1"
+        score: 73.4
+        source: https://huggingface.co/nex-agi/Nex-N2.5-mini
+        date: 2026-11-13
+        note: "self-reported; NexAU harness"
 
   - id: gemma-4-26b-a4b-qat-ud-q4kxl
     hf_repo: unsloth/gemma-4-26B-A4B-it-qat-GGUF
@@ -452,6 +781,47 @@ models:
         --chat-template-kwargs); drop earlier thoughts from the history. Context
         256K. 16 GB: all on GPU with -c 32768 (estimate). 8 GB: --n-cpu-moe 99
         (estimate). Vision: --mmproj mmproj-F16.gguf.
+    benchmarks:
+      - name: "SWE-bench Verified"
+        score: 17.4
+        source: https://huggingface.co/Qwen/Qwen3.6-35B-A3B
+        date: 2026-11-13
+        note: "measured by Qwen (Qwen3.6 card); internal scaffold"
+      - name: "SWE-bench Verified (OpenCode)"
+        score: 25.8
+        source: https://huggingface.co/LiquidAI/LFM2.5-24B-A2B
+        date: 2026-11-13
+        note: "measured by Liquid AI (LFM2.5 card); OpenCode"
+      - name: "SWE-bench Pro"
+        score: 13.8
+        source: https://huggingface.co/Qwen/Qwen3.6-35B-A3B
+        date: 2026-11-13
+        note: "measured by Qwen (Qwen3.6 card)"
+      - name: "Terminal-Bench 2.0"
+        score: 34.2
+        source: https://huggingface.co/Qwen/Qwen3.6-35B-A3B
+        date: 2026-11-13
+        note: "measured by Qwen (Qwen3.6 card); Terminus 2"
+      - name: "LiveCodeBench v6"
+        score: 77.1
+        source: https://huggingface.co/google/gemma-4-26B-A4B-it
+        date: 2026-11-13
+        note: "self-reported; standard checkpoint, not QAT"
+      - name: "SciCode"
+        score: 40.0
+        source: https://artificialanalysis.ai/leaderboards/models
+        date: 2026-11-13
+        note: "measured by Artificial Analysis; reasoning"
+      - name: "GPQA Diamond"
+        score: 82.3
+        source: https://huggingface.co/google/gemma-4-26B-A4B-it
+        date: 2026-11-13
+        note: "self-reported; standard checkpoint, not QAT"
+      - name: "Humanity's Last Exam"
+        score: 8.7
+        source: https://huggingface.co/google/gemma-4-26B-A4B-it
+        date: 2026-11-13
+        note: "self-reported; standard checkpoint, not QAT"
 
   - id: lfm2.5-24b-a2b-q4km
     hf_repo: LiquidAI/LFM2.5-24B-A2B-GGUF
@@ -474,6 +844,27 @@ models:
         <|tool_call_start|> and <|tool_call_end|>); pair it with retrieval for
         knowledge-heavy work (card). 8 GB: --n-cpu-moe 99 (estimate); fast even
         from RAM.
+    benchmarks:
+      - name: "SWE-bench Verified"
+        score: 51.0
+        source: https://huggingface.co/LiquidAI/LFM2.5-24B-A2B
+        date: 2026-11-13
+        note: "self-reported; OpenCode"
+      - name: "SciCode"
+        score: 32.7
+        source: https://huggingface.co/LiquidAI/LFM2.5-24B-A2B
+        date: 2026-11-13
+        note: "self-reported"
+      - name: "GPQA Diamond"
+        score: 74.4
+        source: https://huggingface.co/LiquidAI/LFM2.5-24B-A2B
+        date: 2026-11-13
+        note: "self-reported"
+      - name: "Humanity's Last Exam"
+        score: 7.4
+        source: https://huggingface.co/LiquidAI/LFM2.5-24B-A2B
+        date: 2026-11-13
+        note: "self-reported"
 
   - id: ernie-4.5-21b-a3b-thinking-q4km
     hf_repo: bartowski/baidu_ERNIE-4.5-21B-A3B-Thinking-GGUF
@@ -496,6 +887,22 @@ models:
         0.6, top_p 0.95. Always thinks, with long traces: the card recommends it
         for complex reasoning. Context 131,072. 8 GB: --n-cpu-moe 99 -c 32768
         (estimate).
+    benchmarks:
+      - name: "HumanEval+"
+        score: 90.9
+        source: https://huggingface.co/baidu/ERNIE-4.5-21B-A3B-Thinking
+        date: 2026-11-13
+        note: "self-reported"
+      - name: "MBPP"
+        score: 80.2
+        source: https://huggingface.co/baidu/ERNIE-4.5-21B-A3B-Thinking
+        date: 2026-11-13
+        note: "self-reported"
+      - name: "AIME 2025"
+        score: 78.0
+        source: https://huggingface.co/baidu/ERNIE-4.5-21B-A3B-Thinking
+        date: 2026-11-13
+        note: "self-reported"
 
   - id: gemma-4-12b-q4km
     hf_repo: unsloth/gemma-4-12b-it-GGUF
@@ -518,6 +925,27 @@ models:
         --chat-template-kwargs); drop earlier thoughts from the history. Context
         256K. 8 GB: all on GPU with -c 16384 (estimate). Vision: --mmproj
         mmproj-F16.gguf (audio input untested in llama.cpp, estimate).
+    benchmarks:
+      - name: "Terminal-Bench 2.1"
+        score: 27.3
+        source: https://artificialanalysis.ai/leaderboards/models
+        date: 2026-11-13
+        note: "measured by Artificial Analysis; reasoning; Terminus 2"
+      - name: "LiveCodeBench v6"
+        score: 72.0
+        source: https://huggingface.co/google/gemma-4-12B-it
+        date: 2026-11-13
+        note: "self-reported"
+      - name: "GPQA Diamond"
+        score: 78.8
+        source: https://huggingface.co/google/gemma-4-12B-it
+        date: 2026-11-13
+        note: "self-reported"
+      - name: "Humanity's Last Exam"
+        score: 5.2
+        source: https://huggingface.co/google/gemma-4-12B-it
+        date: 2026-11-13
+        note: "self-reported"
 
   - id: qwen3.5-9b-ud-q4kxl
     hf_repo: unsloth/Qwen3.5-9B-GGUF
@@ -541,6 +969,47 @@ models:
         --chat-template-kwargs '{"enable_thinking":false}'. Context 262,144,
         keep 128K+ (card). 8 GB: all on GPU, -c 32768 -ctk q8_0 -ctv q8_0
         (estimate). Vision: --mmproj mmproj-F16.gguf.
+    benchmarks:
+      - name: "SWE-bench Verified"
+        score: 51.2
+        source: https://huggingface.co/LiquidAI/LFM3-1.7B
+        date: 2026-11-13
+        note: "measured by Liquid AI (LFM3 card); OpenCode"
+      - name: "Terminal-Bench 2.1"
+        score: 29.2
+        source: https://artificialanalysis.ai/leaderboards/models
+        date: 2026-11-13
+        note: "measured by Artificial Analysis; reasoning; Terminus 2"
+      - name: "Terminal-Bench 4.0"
+        score: 0.5
+        source: https://artificialanalysis.ai/leaderboards/models
+        date: 2026-11-13
+        note: "measured by Artificial Analysis; reasoning; mini-swe-agent"
+      - name: "LiveCodeBench v6"
+        score: 65.6
+        source: https://huggingface.co/Qwen/Qwen3.5-9B
+        date: 2026-11-13
+        note: "self-reported"
+      - name: "SciCode"
+        score: 29.5
+        source: https://artificialanalysis.ai/leaderboards/models
+        date: 2026-11-13
+        note: "measured by Artificial Analysis; reasoning"
+      - name: "BFCL-V4"
+        score: 66.1
+        source: https://huggingface.co/Qwen/Qwen3.5-9B
+        date: 2026-11-13
+        note: "self-reported"
+      - name: "τ²-bench"
+        score: 79.1
+        source: https://huggingface.co/Qwen/Qwen3.5-9B
+        date: 2026-11-13
+        note: "self-reported"
+      - name: "GPQA Diamond"
+        score: 81.7
+        source: https://huggingface.co/Qwen/Qwen3.5-9B
+        date: 2026-11-13
+        note: "self-reported"
 
   - id: lfm3-1.7b-q4km
     hf_repo: LiquidAI/LFM3-1.7B-GGUF
@@ -562,6 +1031,42 @@ models:
         --repeat-penalty 1.1; math temp 1.0, top_p 0.95, top_k 20. Reasoning on
         by default; enable_thinking=false works inconsistently. Context 256K.
         Not meant for agentic coding or complex multi-step reasoning (card).
+    benchmarks:
+      - name: "SWE-bench Verified"
+        score: 43.4
+        source: https://huggingface.co/LiquidAI/LFM3-1.7B
+        date: 2026-11-13
+        note: "self-reported; OpenCode"
+      - name: "Terminal-Bench 2.1"
+        score: 12.9
+        source: https://huggingface.co/LiquidAI/LFM3-1.7B
+        date: 2026-11-13
+        note: "self-reported; OpenCode"
+      - name: "LiveCodeBench v6"
+        score: 73.5
+        source: https://huggingface.co/LiquidAI/LFM3-1.7B
+        date: 2026-11-13
+        note: "self-reported"
+      - name: "SciCode"
+        score: 28.5
+        source: https://huggingface.co/LiquidAI/LFM3-1.7B
+        date: 2026-11-13
+        note: "self-reported"
+      - name: "BFCL V4"
+        score: 71.4
+        source: https://huggingface.co/LiquidAI/LFM3-1.7B
+        date: 2026-11-13
+        note: "self-reported"
+      - name: "GPQA Diamond"
+        score: 63.4
+        source: https://huggingface.co/LiquidAI/LFM3-1.7B
+        date: 2026-11-13
+        note: "self-reported"
+      - name: "Humanity's Last Exam"
+        score: 7.2
+        source: https://huggingface.co/LiquidAI/LFM3-1.7B
+        date: 2026-11-13
+        note: "self-reported"
 
   - id: qwen3.8-27b-ud-iq4xs
     hf_repo: unsloth/Qwen3.8-27B-GGUF
@@ -589,6 +1094,47 @@ models:
         | low; preserve_thinking is on. Context 262,144. 16 GB: all layers on
         GPU, -c 16384 -ctk q8_0 -ctv q8_0 (estimate). 8 GB: -ngl 30 (estimate),
         2-4 tok/s. Vision: --mmproj mmproj-F16.gguf.
+    benchmarks:
+      - name: "SWE-bench Pro"
+        score: 61.7
+        source: https://huggingface.co/Qwen/Qwen3.8-27B
+        date: 2026-11-13
+        note: "self-reported; Claude Code harness"
+      - name: "DeepSWE 1.1"
+        score: 42.2
+        source: https://huggingface.co/Qwen/Qwen3.8-27B
+        date: 2026-11-13
+        note: "self-reported; Claude Code harness"
+      - name: "Terminal-Bench 2.1"
+        score: 73.0
+        source: https://huggingface.co/Qwen/Qwen3.8-27B
+        date: 2026-11-13
+        note: "self-reported; Terminus"
+      - name: "Terminal-Bench 4.0"
+        score: 5.6
+        source: https://artificialanalysis.ai/leaderboards/models
+        date: 2026-11-13
+        note: "measured by Artificial Analysis; xhigh effort; mini-swe-agent"
+      - name: "FrontierCode 2.0"
+        score: 14.9
+        source: https://artificialanalysis.ai/leaderboards/models
+        date: 2026-11-13
+        note: "measured by Artificial Analysis; xhigh effort; Stirrup harness"
+      - name: "LiveCodeBench v6"
+        score: 90.3
+        source: https://huggingface.co/Qwen/Qwen3.8-27B
+        date: 2026-11-13
+        note: "self-reported"
+      - name: "GPQA Diamond"
+        score: 89.2
+        source: https://huggingface.co/Qwen/Qwen3.8-27B
+        date: 2026-11-13
+        note: "self-reported"
+      - name: "AA Intelligence Index v5.0.1"
+        score: 20.1
+        source: https://artificialanalysis.ai/leaderboards/models
+        date: 2026-11-13
+        note: "measured by Artificial Analysis; xhigh effort"
 
   - id: qwen3.8-27b-ud-q4kxl
     hf_repo: unsloth/Qwen3.8-27B-GGUF
@@ -613,6 +1159,47 @@ models:
         '{"enable_thinking":false}'. --reasoning-effort xhigh (default) | medium
         | low; preserve_thinking is on. Context 262,144. 24 GB: all on GPU, -c
         32768 (estimate). Vision: --mmproj mmproj-F16.gguf.
+    benchmarks:
+      - name: "SWE-bench Pro"
+        score: 61.7
+        source: https://huggingface.co/Qwen/Qwen3.8-27B
+        date: 2026-11-13
+        note: "self-reported; Claude Code harness"
+      - name: "DeepSWE 1.1"
+        score: 42.2
+        source: https://huggingface.co/Qwen/Qwen3.8-27B
+        date: 2026-11-13
+        note: "self-reported; Claude Code harness"
+      - name: "Terminal-Bench 2.1"
+        score: 73.0
+        source: https://huggingface.co/Qwen/Qwen3.8-27B
+        date: 2026-11-13
+        note: "self-reported; Terminus"
+      - name: "Terminal-Bench 4.0"
+        score: 5.6
+        source: https://artificialanalysis.ai/leaderboards/models
+        date: 2026-11-13
+        note: "measured by Artificial Analysis; xhigh effort; mini-swe-agent"
+      - name: "FrontierCode 2.0"
+        score: 14.9
+        source: https://artificialanalysis.ai/leaderboards/models
+        date: 2026-11-13
+        note: "measured by Artificial Analysis; xhigh effort; Stirrup harness"
+      - name: "LiveCodeBench v6"
+        score: 90.3
+        source: https://huggingface.co/Qwen/Qwen3.8-27B
+        date: 2026-11-13
+        note: "self-reported"
+      - name: "GPQA Diamond"
+        score: 89.2
+        source: https://huggingface.co/Qwen/Qwen3.8-27B
+        date: 2026-11-13
+        note: "self-reported"
+      - name: "AA Intelligence Index v5.0.1"
+        score: 20.1
+        source: https://artificialanalysis.ai/leaderboards/models
+        date: 2026-11-13
+        note: "measured by Artificial Analysis; xhigh effort"
 
   - id: gemma-4-31b-ud-q3kxl
     hf_repo: unsloth/gemma-4-31B-it-GGUF
@@ -638,6 +1225,47 @@ models:
         --chat-template-kwargs); drop earlier thoughts from the history. Context
         256K. 16 GB: all on GPU with -c 8192 (estimate). 8 GB: -ngl 25
         (estimate), 2-4 tok/s. Vision: --mmproj mmproj-F16.gguf.
+    benchmarks:
+      - name: "SWE-bench Verified"
+        score: 52.0
+        source: https://huggingface.co/Qwen/Qwen3.6-35B-A3B
+        date: 2026-11-13
+        note: "measured by Qwen (Qwen3.6 card); internal scaffold"
+      - name: "SWE-bench Pro"
+        score: 35.7
+        source: https://huggingface.co/Qwen/Qwen3.6-35B-A3B
+        date: 2026-11-13
+        note: "measured by Qwen (Qwen3.6 card)"
+      - name: "Terminal-Bench 2.0"
+        score: 42.9
+        source: https://huggingface.co/Qwen/Qwen3.6-35B-A3B
+        date: 2026-11-13
+        note: "measured by Qwen (Qwen3.6 card); Terminus 2"
+      - name: "Terminal-Bench 2.1"
+        score: 43.4
+        source: https://artificialanalysis.ai/leaderboards/models
+        date: 2026-11-13
+        note: "measured by Artificial Analysis; reasoning; Terminus 2"
+      - name: "Terminal-Bench 4.0"
+        score: 0.0
+        source: https://artificialanalysis.ai/leaderboards/models
+        date: 2026-11-13
+        note: "measured by Artificial Analysis; reasoning; mini-swe-agent"
+      - name: "LiveCodeBench v6"
+        score: 80.0
+        source: https://huggingface.co/google/gemma-4-31B-it
+        date: 2026-11-13
+        note: "self-reported"
+      - name: "SciCode"
+        score: 45.5
+        source: https://artificialanalysis.ai/leaderboards/models
+        date: 2026-11-13
+        note: "measured by Artificial Analysis; reasoning"
+      - name: "AA Intelligence Index v5.0.1"
+        score: 4.4
+        source: https://artificialanalysis.ai/leaderboards/models
+        date: 2026-11-13
+        note: "measured by Artificial Analysis; reasoning"
 
   - id: gemma-4-31b-ud-q4kxl
     hf_repo: unsloth/gemma-4-31B-it-GGUF
@@ -661,6 +1289,47 @@ models:
         --chat-template-kwargs); drop earlier thoughts from the history. Context
         256K. 24 GB: all on GPU with -c 16384 (estimate). Vision: --mmproj
         mmproj-F16.gguf.
+    benchmarks:
+      - name: "SWE-bench Verified"
+        score: 52.0
+        source: https://huggingface.co/Qwen/Qwen3.6-35B-A3B
+        date: 2026-11-13
+        note: "measured by Qwen (Qwen3.6 card); internal scaffold"
+      - name: "SWE-bench Pro"
+        score: 35.7
+        source: https://huggingface.co/Qwen/Qwen3.6-35B-A3B
+        date: 2026-11-13
+        note: "measured by Qwen (Qwen3.6 card)"
+      - name: "Terminal-Bench 2.0"
+        score: 42.9
+        source: https://huggingface.co/Qwen/Qwen3.6-35B-A3B
+        date: 2026-11-13
+        note: "measured by Qwen (Qwen3.6 card); Terminus 2"
+      - name: "Terminal-Bench 2.1"
+        score: 43.4
+        source: https://artificialanalysis.ai/leaderboards/models
+        date: 2026-11-13
+        note: "measured by Artificial Analysis; reasoning; Terminus 2"
+      - name: "Terminal-Bench 4.0"
+        score: 0.0
+        source: https://artificialanalysis.ai/leaderboards/models
+        date: 2026-11-13
+        note: "measured by Artificial Analysis; reasoning; mini-swe-agent"
+      - name: "LiveCodeBench v6"
+        score: 80.0
+        source: https://huggingface.co/google/gemma-4-31B-it
+        date: 2026-11-13
+        note: "self-reported"
+      - name: "SciCode"
+        score: 45.5
+        source: https://artificialanalysis.ai/leaderboards/models
+        date: 2026-11-13
+        note: "measured by Artificial Analysis; reasoning"
+      - name: "AA Intelligence Index v5.0.1"
+        score: 4.4
+        source: https://artificialanalysis.ai/leaderboards/models
+        date: 2026-11-13
+        note: "measured by Artificial Analysis; reasoning"
 
   - id: edge0-145b-q3k
     hf_repo: Edge0/Edge0-145B-q3k
@@ -686,6 +1355,22 @@ models:
         experts not cached in RAM stream from disk, so copy it to NVMe.
         --resident-budget-gib N caps the RAM expert cache. Sampling: card gives
         none; Qwen3.8-Flash-Next's temp 1.0, top_p 0.95, top_k 20 (estimate).
+    benchmarks:
+      - name: "DeepSWE 1.1"
+        score: 64.6
+        source: https://huggingface.co/Edge0/Edge0-145B-q3k
+        date: 2026-11-13
+        note: "self-reported; harness not stated"
+      - name: "Terminal-Bench 2.1"
+        score: 86.5
+        source: https://huggingface.co/Edge0/Edge0-145B-q3k
+        date: 2026-11-13
+        note: "self-reported; harness not stated"
+      - name: "GPQA Diamond"
+        score: 90.4
+        source: https://huggingface.co/Edge0/Edge0-145B-q3k
+        date: 2026-11-13
+        note: "self-reported"
 
   - id: edge0-120b-q3k
     hf_repo: Edge0/Edge0-120B-q3k
@@ -708,6 +1393,22 @@ models:
         experts not cached in RAM stream from disk, so copy it to NVMe.
         --resident-budget-gib N caps the RAM expert cache. Sampling: card gives
         none; Qwen3.8-Flash-Next's temp 1.0, top_p 0.95, top_k 20 (estimate).
+    benchmarks:
+      - name: "DeepSWE 1.1"
+        score: 51.3
+        source: https://huggingface.co/Edge0/Edge0-120B-q3k
+        date: 2026-11-13
+        note: "self-reported; harness not stated"
+      - name: "Terminal-Bench 2.1"
+        score: 75.3
+        source: https://huggingface.co/Edge0/Edge0-120B-q3k
+        date: 2026-11-13
+        note: "self-reported; harness not stated"
+      - name: "GPQA Diamond"
+        score: 87.4
+        source: https://huggingface.co/Edge0/Edge0-120B-q3k
+        date: 2026-11-13
+        note: "self-reported"
 
   - id: edge0-35b-a3b-preview
     hf_repo: Edge0/Edge0-35B-A3B-preview
@@ -731,6 +1432,17 @@ models:
         edge0-infer run | chat | serve --model <assets>. ~3 GiB active memory at
         short context. Thinking is on via the bundled template. Sampling: card
         gives none; Qwen3.6-35B-A3B's (estimate).
+    benchmarks:
+      - name: "GPQA Diamond"
+        score: 79.8
+        source: https://huggingface.co/Edge0/Edge0-35B-A3B-preview
+        date: 2026-11-13
+        note: "self-reported; int4"
+      - name: "AIME 2026"
+        score: 86.6
+        source: https://huggingface.co/Edge0/Edge0-35B-A3B-preview
+        date: 2026-11-13
+        note: "self-reported; int4"
 
   - id: nemotron-3.5-super-vl-q4_0
     hf_repo: ggml-org/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-GGUF
@@ -755,6 +1467,47 @@ models:
         (levels off / on (medium) / on). Context up to 1M; -c 32768 locally
         (estimate). 8 GB: llama-server -m <Q4_0 gguf> --mmproj <mmproj Q8_0>
         --n-cpu-moe 99 (estimate); ~72 GB RAM, slow.
+    benchmarks:
+      - name: "SWE-bench Verified"
+        score: 71.1
+        source: https://huggingface.co/nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-BF16
+        date: 2026-11-13
+        note: "self-reported"
+      - name: "SWE-bench Pro"
+        score: 51.8
+        source: https://huggingface.co/nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-BF16
+        date: 2026-11-13
+        note: "self-reported"
+      - name: "Terminal-Bench 2.1"
+        score: 60.7
+        source: https://huggingface.co/nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-BF16
+        date: 2026-11-13
+        note: "self-reported"
+      - name: "Terminal-Bench 4.0"
+        score: 0.0
+        source: https://artificialanalysis.ai/leaderboards/models
+        date: 2026-11-13
+        note: "measured by Artificial Analysis; mini-swe-agent"
+      - name: "LiveCodeBench v6"
+        score: 88.2
+        source: https://huggingface.co/nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-BF16
+        date: 2026-11-13
+        note: "self-reported"
+      - name: "SciCode"
+        score: 47.1
+        source: https://huggingface.co/nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-BF16
+        date: 2026-11-13
+        note: "self-reported"
+      - name: "GPQA Diamond"
+        score: 89.5
+        source: https://huggingface.co/nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-BF16
+        date: 2026-11-13
+        note: "self-reported"
+      - name: "AA Intelligence Index v5.0.1"
+        score: 13.6
+        source: https://artificialanalysis.ai/leaderboards/models
+        date: 2026-11-13
+        note: "measured by Artificial Analysis"
 
   - id: deepseek-v4.1-flash-1017-ud-iq1s
     hf_repo: unsloth/DeepSeek-V4.1-Flash-1017-GGUF
@@ -782,6 +1535,42 @@ models:
         load it (estimate). The ~110 GB engram shard stays on disk via mmap:
         keep it on NVMe, no --no-mmap (estimate). 8 GB: --n-cpu-moe 99 -c 16384
         (estimate), 1-3 tok/s.
+    benchmarks:
+      - name: "DeepSWE 1.1"
+        score: 77.0
+        source: https://huggingface.co/deepseek-ai/DeepSeek-V4.1-Flash-1017
+        date: 2026-11-13
+        note: "self-reported; Mini-SWE-V2 harness"
+      - name: "Terminal-Bench 4.0"
+        score: 42.3
+        source: https://huggingface.co/deepseek-ai/DeepSeek-V4.1-Flash-1017
+        date: 2026-11-13
+        note: "self-reported; Claude Code harness"
+      - name: "Terminal-Bench 4.0"
+        score: 33.8
+        source: https://artificialanalysis.ai/leaderboards/models
+        date: 2026-11-13
+        note: "measured by Artificial Analysis; max effort; mini-swe-agent"
+      - name: "FrontierCode 2.0"
+        score: 28.5
+        source: https://artificialanalysis.ai/leaderboards/models
+        date: 2026-11-13
+        note: "measured by Artificial Analysis; max effort; Stirrup harness"
+      - name: "SciCode"
+        score: 55.9
+        source: https://artificialanalysis.ai/leaderboards/models
+        date: 2026-11-13
+        note: "measured by Artificial Analysis; max effort"
+      - name: "Humanity's Last Exam"
+        score: 42.6
+        source: https://huggingface.co/deepseek-ai/DeepSeek-V4.1-Flash-1017
+        date: 2026-11-13
+        note: "self-reported; text-only, no tools"
+      - name: "AA Intelligence Index v5.0.1"
+        score: 32.6
+        source: https://artificialanalysis.ai/leaderboards/models
+        date: 2026-11-13
+        note: "measured by Artificial Analysis; max effort"
 
   # ======================================================== cybersecurity
 
@@ -806,6 +1595,22 @@ models:
         1.1. Emits a reasoning trace before the answer (vLLM uses the minimax_m2
         reasoning parser). Llama 3.1 base: context 131,072 (estimate). 8 GB: all
         on GPU, -c 16384 (estimate). Card advises LlamaGuard and human review.
+    benchmarks:
+      - name: "CTI-MCQA"
+        score: 0.691
+        source: https://huggingface.co/fdtn-ai/Foundation-Sec-8B-Reasoning
+        date: 2026-11-13
+        note: "self-reported"
+      - name: "CTI-RCM"
+        score: 0.753
+        source: https://huggingface.co/fdtn-ai/Foundation-Sec-8B-Reasoning
+        date: 2026-11-13
+        note: "self-reported"
+      - name: "CTI-VSP"
+        score: 0.856
+        source: https://huggingface.co/fdtn-ai/Foundation-Sec-8B-Reasoning
+        date: 2026-11-13
+        note: "self-reported"
 
   - id: foundation-sec-8b-instruct-q4km
     hf_repo: mradermacher/Foundation-Sec-8B-Instruct-GGUF
@@ -824,6 +1629,22 @@ models:
         Sampling (Cisco card): example uses temp 0.1, benchmarks temp 0.3. Llama
         3.1 chat template; context 131,072 (estimate, Llama 3.1). 8 GB: all on
         GPU, -c 16384 (estimate). Card advises LlamaGuard and human review.
+    benchmarks:
+      - name: "CTI-MCQA"
+        score: 0.644
+        source: https://huggingface.co/fdtn-ai/Foundation-Sec-8B-Instruct
+        date: 2026-11-13
+        note: "self-reported"
+      - name: "CTI-RCM"
+        score: 0.692
+        source: https://huggingface.co/fdtn-ai/Foundation-Sec-8B-Instruct
+        date: 2026-11-13
+        note: "self-reported"
+      - name: "CTI-VSP"
+        score: 0.802
+        source: https://huggingface.co/fdtn-ai/Foundation-Sec-8B-Instruct
+        date: 2026-11-13
+        note: "self-reported"
 
   - id: whiterabbitneo-2.5-7b-q4km
     hf_repo: bartowski/WhiteRabbitNeo-2.5-Qwen-2.5-Coder-7B-GGUF
@@ -927,6 +1748,17 @@ models:
         refusals vs 83/100, KL 0.0015 from the original; MTP head kept
         (llama.cpp MTP decoding untested, estimate). 8 GB: --n-cpu-moe 99 -c
         32768 (estimate). Vision: --mmproj <...-mmproj-BF16.gguf>.
+    benchmarks:
+      - name: "Refusals (of 100 test prompts)"
+        score: "10/100"
+        source: https://huggingface.co/llmfan46/Qwen3.6-35B-A3B-uncensored-heretic-Native-MTP-Preserved-GGUF
+        date: 2026-11-13
+        note: "self-reported; base model 83/100"
+      - name: "KL divergence from base"
+        score: 0.0015
+        source: https://huggingface.co/llmfan46/Qwen3.6-35B-A3B-uncensored-heretic-Native-MTP-Preserved-GGUF
+        date: 2026-11-13
+        note: "self-reported"
 
   - id: gemma-4-31b-abliterated-q4k
     hf_repo: huihui-ai/Huihui-gemma-4-31B-it-qat-q4_0-unquantized-abliterated-GGUF
@@ -1005,6 +1837,27 @@ models:
         probability per option. Support landed in llama.cpp PR #29831
         (2026-10-03, text-only; the mmproj is kept for vision once supported).
         Sampling settings don't apply. Qwen3.5-9B base; fits 8 GB all on GPU.
+    benchmarks:
+      - name: "BFCL"
+        score: 98.8
+        source: https://huggingface.co/Cloudflare/clef-flash
+        date: 2026-11-13
+        note: "self-reported; case exact accuracy"
+      - name: "BANKING77"
+        score: 90.9
+        source: https://huggingface.co/Cloudflare/clef-flash
+        date: 2026-11-13
+        note: "self-reported; macro-F1"
+      - name: "MMLU-Pro"
+        score: 65.3
+        source: https://huggingface.co/Cloudflare/clef-flash
+        date: 2026-11-13
+        note: "self-reported"
+      - name: "JevBench (231 public items)"
+        score: 82.3
+        source: https://huggingface.co/openjev/OpenJev-Flash-9B
+        date: 2026-11-13
+        note: "measured by the OpenJev authors"
 
   - id: clef-flash-q8
     hf_repo: ggml-org/Clef-Flash-GGUF
@@ -1028,6 +1881,27 @@ models:
         probability per option. Support landed in llama.cpp PR #29831
         (2026-10-03, text-only; the mmproj is kept for vision once supported).
         Sampling settings don't apply. 16 GB+: all on GPU.
+    benchmarks:
+      - name: "BFCL"
+        score: 98.8
+        source: https://huggingface.co/Cloudflare/clef-flash
+        date: 2026-11-13
+        note: "self-reported; case exact accuracy"
+      - name: "BANKING77"
+        score: 90.9
+        source: https://huggingface.co/Cloudflare/clef-flash
+        date: 2026-11-13
+        note: "self-reported; macro-F1"
+      - name: "MMLU-Pro"
+        score: 65.3
+        source: https://huggingface.co/Cloudflare/clef-flash
+        date: 2026-11-13
+        note: "self-reported"
+      - name: "JevBench (231 public items)"
+        score: 82.3
+        source: https://huggingface.co/openjev/OpenJev-Flash-9B
+        date: 2026-11-13
+        note: "measured by the OpenJev authors"
 
   - id: clef-q4km
     hf_repo: ggml-org/Clef-GGUF
@@ -1053,6 +1927,27 @@ models:
         per option. Support landed in llama.cpp PR #29831 (2026-10-03,
         text-only; the mmproj is kept for vision once supported). Sampling
         settings don't apply. Qwen3.8-27B base, dense: 24 GB all on GPU.
+    benchmarks:
+      - name: "BFCL"
+        score: 98.5
+        source: https://huggingface.co/Cloudflare/clef
+        date: 2026-11-13
+        note: "self-reported; case exact accuracy"
+      - name: "BANKING77"
+        score: 94.2
+        source: https://huggingface.co/Cloudflare/clef
+        date: 2026-11-13
+        note: "self-reported; macro-F1"
+      - name: "MMLU-Pro"
+        score: 65.9
+        source: https://huggingface.co/Cloudflare/clef
+        date: 2026-11-13
+        note: "self-reported"
+      - name: "RAGTruth"
+        score: 79.4
+        source: https://huggingface.co/Cloudflare/clef
+        date: 2026-11-13
+        note: "self-reported; hallucination F1"
 
   - id: openjev-q4km
     hf_repo: openjev/openjev-GGUF
@@ -1083,6 +1978,17 @@ models:
         false. For per-option probabilities use n_probs on /completion and read
         the letter tokens at the first position (what loopai-hq/openjev-server
         does). Text only. Card recommends 24 GB; 16 GB is tight.
+    benchmarks:
+      - name: "OpenJev 10k decision set"
+        score: 84.0
+        source: https://huggingface.co/openjev/openjev
+        date: 2026-11-13
+        note: "self-reported; 16-bit model; hosted Jev API 85.4"
+      - name: "OpenJev held-out set (1,789 questions), Q4_K_M"
+        score: 82.8
+        source: https://huggingface.co/openjev/openjev-GGUF
+        date: 2026-11-13
+        note: "self-reported; 16-bit model 83.2 on the same set"
 
   - id: clef-omni
     hf_repo: Cloudflare/clef-omni
@@ -1104,6 +2010,22 @@ models:
         slow). Load with load_release_model from joint_schema_model.py; one
         logit per option, softmax per question. Images need pillow, audio and
         video need av; video at 2 fps, audio 16 kHz mono.
+    benchmarks:
+      - name: "BFCL"
+        score: 98.2
+        source: https://huggingface.co/Cloudflare/clef-omni
+        date: 2026-11-13
+        note: "self-reported; case exact accuracy"
+      - name: "BANKING77"
+        score: 94.8
+        source: https://huggingface.co/Cloudflare/clef-omni
+        date: 2026-11-13
+        note: "self-reported; macro-F1"
+      - name: "MMLU-Pro"
+        score: 70.6
+        source: https://huggingface.co/Cloudflare/clef-omni
+        date: 2026-11-13
+        note: "self-reported"
 
   - id: openjev-flash-9b
     hf_repo: openjev/OpenJev-Flash-9B
@@ -1127,6 +2049,17 @@ models:
         question. FP8 needs an Ada or newer GPU (estimate); on 8 GB Turing
         convert to GGUF (convert_hf_to_gguf.py + llama-quantize Q4_K_M) for
         llama.cpp (estimate).
+    benchmarks:
+      - name: "JevBench (231 public items)"
+        score: 81.4
+        source: https://huggingface.co/openjev/OpenJev-Flash-9B
+        date: 2026-11-13
+        note: "self-reported"
+      - name: "OpenJev 10k decision set"
+        score: 79.4
+        source: https://huggingface.co/openjev/OpenJev-Flash-9B
+        date: 2026-11-13
+        note: "self-reported"
 
   # ================================================================ image
   # ComfyUI + ComfyUI-GGUF. VRAM need ~ diffusion-model file + 1-2 GB; text
@@ -1249,6 +2182,27 @@ models:
           url: https://raw.githubusercontent.com/Comfy-Org/workflow_templates/36ecd0663961c5e1e83f7c0ea521658b33b36bbc/templates/image_flux2_klein_image_edit_9b_distilled.json
         - name: image_flux2_text_to_image_9b.json
           url: https://raw.githubusercontent.com/Comfy-Org/workflow_templates/36ecd0663961c5e1e83f7c0ea521658b33b36bbc/templates/image_flux2_text_to_image_9b.json
+    benchmarks:
+      - name: "Arena text-to-image"
+        score: 1070
+        source: https://arena.ai/leaderboard/text-to-image
+        date: 2026-11-12
+        note: "rank 65 of 85"
+      - name: "Arena image edit"
+        score: 1224
+        source: https://arena.ai/leaderboard/image-edit
+        date: 2026-11-12
+        note: "rank 46 of 64"
+      - name: "Artificial Analysis text-to-image Elo"
+        score: 932
+        source: https://artificialanalysis.ai/text-to-image
+        date: 2026-11-13
+        note: "position 79 of 112 by Elo"
+      - name: "Artificial Analysis image editing Elo"
+        score: 1014
+        source: https://artificialanalysis.ai/text-to-image
+        date: 2026-11-13
+        note: "position 49 of 83 by Elo"
 
   - id: flux2-klein-9b-q8
     hf_repo: unsloth/FLUX.2-klein-9B-GGUF
@@ -1274,6 +2228,27 @@ models:
           url: https://raw.githubusercontent.com/Comfy-Org/workflow_templates/36ecd0663961c5e1e83f7c0ea521658b33b36bbc/templates/image_flux2_klein_image_edit_9b_distilled.json
         - name: image_flux2_text_to_image_9b.json
           url: https://raw.githubusercontent.com/Comfy-Org/workflow_templates/36ecd0663961c5e1e83f7c0ea521658b33b36bbc/templates/image_flux2_text_to_image_9b.json
+    benchmarks:
+      - name: "Arena text-to-image"
+        score: 1070
+        source: https://arena.ai/leaderboard/text-to-image
+        date: 2026-11-12
+        note: "rank 65 of 85"
+      - name: "Arena image edit"
+        score: 1224
+        source: https://arena.ai/leaderboard/image-edit
+        date: 2026-11-12
+        note: "rank 46 of 64"
+      - name: "Artificial Analysis text-to-image Elo"
+        score: 932
+        source: https://artificialanalysis.ai/text-to-image
+        date: 2026-11-13
+        note: "position 79 of 112 by Elo"
+      - name: "Artificial Analysis image editing Elo"
+        score: 1014
+        source: https://artificialanalysis.ai/text-to-image
+        date: 2026-11-13
+        note: "position 49 of 83 by Elo"
 
   - id: flux2-klein-9b-qwen-3-8b-fp8
     hf_repo: Comfy-Org/Flux-2-Klein-9B
@@ -1320,6 +2295,27 @@ models:
           url: https://raw.githubusercontent.com/Comfy-Org/workflow_templates/36ecd0663961c5e1e83f7c0ea521658b33b36bbc/templates/image_flux2_klein_text_to_image.json
         - name: image_flux2_klein_image_edit_4b_distilled.json
           url: https://raw.githubusercontent.com/Comfy-Org/workflow_templates/36ecd0663961c5e1e83f7c0ea521658b33b36bbc/templates/image_flux2_klein_image_edit_4b_distilled.json
+    benchmarks:
+      - name: "Arena text-to-image"
+        score: 1030
+        source: https://arena.ai/leaderboard/text-to-image
+        date: 2026-11-12
+        note: "rank 73 of 85"
+      - name: "Arena image edit"
+        score: 1187
+        source: https://arena.ai/leaderboard/image-edit
+        date: 2026-11-12
+        note: "rank 54 of 64"
+      - name: "Artificial Analysis text-to-image Elo"
+        score: 840
+        source: https://artificialanalysis.ai/text-to-image
+        date: 2026-11-13
+        note: "position 102 of 112 by Elo"
+      - name: "Artificial Analysis image editing Elo"
+        score: 942
+        source: https://artificialanalysis.ai/text-to-image
+        date: 2026-11-13
+        note: "position 69 of 83 by Elo"
 
   # ---- Qwen-Image-2.1 (generation + edit)
   - id: qwen-image-2.1-q4km
@@ -1352,6 +2348,27 @@ models:
           url: https://raw.githubusercontent.com/Comfy-Org/workflow_templates/36ecd0663961c5e1e83f7c0ea521658b33b36bbc/templates/image_qwen_image_2_1_t2i.json
         - name: image_qwen_image_2_1_image_edit.json
           url: https://raw.githubusercontent.com/Comfy-Org/workflow_templates/36ecd0663961c5e1e83f7c0ea521658b33b36bbc/templates/image_qwen_image_2_1_image_edit.json
+    benchmarks:
+      - name: "Arena text-to-image"
+        score: 1227
+        source: https://arena.ai/leaderboard/text-to-image
+        date: 2026-11-12
+        note: "rank 21 of 85, preliminary"
+      - name: "Arena image edit"
+        score: 1363
+        source: https://arena.ai/leaderboard/image-edit
+        date: 2026-11-12
+        note: "rank 22 of 64, preliminary"
+      - name: "Artificial Analysis text-to-image Elo"
+        score: 1046
+        source: https://artificialanalysis.ai/text-to-image
+        date: 2026-11-13
+        note: "position 26 of 112 by Elo"
+      - name: "Artificial Analysis image editing Elo"
+        score: 1084
+        source: https://artificialanalysis.ai/text-to-image
+        date: 2026-11-13
+        note: "position 29 of 83 by Elo"
 
   - id: qwen-image-2.1-q8
     hf_repo: unsloth/Qwen-Image-2.1-GGUF
@@ -1378,6 +2395,27 @@ models:
           url: https://raw.githubusercontent.com/Comfy-Org/workflow_templates/36ecd0663961c5e1e83f7c0ea521658b33b36bbc/templates/image_qwen_image_2_1_t2i.json
         - name: image_qwen_image_2_1_image_edit.json
           url: https://raw.githubusercontent.com/Comfy-Org/workflow_templates/36ecd0663961c5e1e83f7c0ea521658b33b36bbc/templates/image_qwen_image_2_1_image_edit.json
+    benchmarks:
+      - name: "Arena text-to-image"
+        score: 1227
+        source: https://arena.ai/leaderboard/text-to-image
+        date: 2026-11-12
+        note: "rank 21 of 85, preliminary"
+      - name: "Arena image edit"
+        score: 1363
+        source: https://arena.ai/leaderboard/image-edit
+        date: 2026-11-12
+        note: "rank 22 of 64, preliminary"
+      - name: "Artificial Analysis text-to-image Elo"
+        score: 1046
+        source: https://artificialanalysis.ai/text-to-image
+        date: 2026-11-13
+        note: "position 26 of 112 by Elo"
+      - name: "Artificial Analysis image editing Elo"
+        score: 1084
+        source: https://artificialanalysis.ai/text-to-image
+        date: 2026-11-13
+        note: "position 29 of 83 by Elo"
 
   - id: qwen3-vl-8b-encoder-q4
     hf_repo: unsloth/Qwen3-VL-8B-Instruct-GGUF
@@ -1459,6 +2497,17 @@ models:
       workflows:
         - name: image_z_image_turbo.json
           url: https://raw.githubusercontent.com/Comfy-Org/workflow_templates/36ecd0663961c5e1e83f7c0ea521658b33b36bbc/templates/image_z_image_turbo.json
+    benchmarks:
+      - name: "Arena text-to-image"
+        score: 1082
+        source: https://arena.ai/leaderboard/text-to-image
+        date: 2026-11-12
+        note: "rank 62 of 85"
+      - name: "Artificial Analysis text-to-image Elo"
+        score: 936
+        source: https://artificialanalysis.ai/text-to-image
+        date: 2026-11-13
+        note: "position 77 of 112 by Elo"
 
   # ---- Krea 2 Turbo
   - id: krea2-turbo-q4_0
@@ -1491,6 +2540,12 @@ models:
           url: https://huggingface.co/molbal/krea2-gguf/resolve/6eaa93726f42426793653d322189e5d6df400c2e/workflows/krea2-gguf.json
         - name: image_krea2_turbo_t2i.json
           url: https://raw.githubusercontent.com/Comfy-Org/workflow_templates/36ecd0663961c5e1e83f7c0ea521658b33b36bbc/templates/image_krea2_turbo_t2i.json
+    benchmarks:
+      - name: "Arena text-to-image"
+        score: 1115
+        source: https://arena.ai/leaderboard/text-to-image
+        date: 2026-11-12
+        note: "rank 52 of 85"
 
   - id: krea2-turbo-q8
     hf_repo: molbal/krea2-gguf
@@ -1517,6 +2572,12 @@ models:
           url: https://huggingface.co/molbal/krea2-gguf/resolve/6eaa93726f42426793653d322189e5d6df400c2e/workflows/krea2-gguf.json
         - name: image_krea2_turbo_t2i.json
           url: https://raw.githubusercontent.com/Comfy-Org/workflow_templates/36ecd0663961c5e1e83f7c0ea521658b33b36bbc/templates/image_krea2_turbo_t2i.json
+    benchmarks:
+      - name: "Arena text-to-image"
+        score: 1115
+        source: https://arena.ai/leaderboard/text-to-image
+        date: 2026-11-12
+        note: "rank 52 of 85"
 
   - id: krea2-qwen3vl-4b-fp8
     hf_repo: Comfy-Org/Krea-2
@@ -1635,6 +2696,17 @@ models:
           url: https://huggingface.co/Abiray/MiniMax-H3-Image-GGUF/resolve/fec7ec774db49d0c785bdc2174a488576b7396dd/image_minimax_h3_image_t2i_gguf.json
         - name: image_minimax_h3_image_edit.json
           url: https://raw.githubusercontent.com/Comfy-Org/workflow_templates/36ecd0663961c5e1e83f7c0ea521658b33b36bbc/templates/image_minimax_h3_image_edit.json
+    benchmarks:
+      - name: "Arena text-to-image"
+        score: 1197
+        source: https://arena.ai/leaderboard/text-to-image
+        date: 2026-11-12
+        note: "rank 23 of 85"
+      - name: "Arena image edit"
+        score: 1359
+        source: https://arena.ai/leaderboard/image-edit
+        date: 2026-11-12
+        note: "rank 24 of 64"
 
   - id: minimax-h3-image-q4km
     hf_repo: Hearthscale/MiniMax-H3-Image-GGUF
@@ -1665,6 +2737,17 @@ models:
           url: https://huggingface.co/Abiray/MiniMax-H3-Image-GGUF/resolve/fec7ec774db49d0c785bdc2174a488576b7396dd/image_minimax_h3_image_t2i_gguf.json
         - name: image_minimax_h3_image_edit.json
           url: https://raw.githubusercontent.com/Comfy-Org/workflow_templates/36ecd0663961c5e1e83f7c0ea521658b33b36bbc/templates/image_minimax_h3_image_edit.json
+    benchmarks:
+      - name: "Arena text-to-image"
+        score: 1197
+        source: https://arena.ai/leaderboard/text-to-image
+        date: 2026-11-12
+        note: "rank 23 of 85"
+      - name: "Arena image edit"
+        score: 1359
+        source: https://arena.ai/leaderboard/image-edit
+        date: 2026-11-12
+        note: "rank 24 of 64"
 
   - id: minimax-h3-image-q8
     hf_repo: Hearthscale/MiniMax-H3-Image-GGUF
@@ -1693,6 +2776,17 @@ models:
           url: https://huggingface.co/Abiray/MiniMax-H3-Image-GGUF/resolve/fec7ec774db49d0c785bdc2174a488576b7396dd/image_minimax_h3_image_t2i_gguf.json
         - name: image_minimax_h3_image_edit.json
           url: https://raw.githubusercontent.com/Comfy-Org/workflow_templates/36ecd0663961c5e1e83f7c0ea521658b33b36bbc/templates/image_minimax_h3_image_edit.json
+    benchmarks:
+      - name: "Arena text-to-image"
+        score: 1197
+        source: https://arena.ai/leaderboard/text-to-image
+        date: 2026-11-12
+        note: "rank 23 of 85"
+      - name: "Arena image edit"
+        score: 1359
+        source: https://arena.ai/leaderboard/image-edit
+        date: 2026-11-12
+        note: "rank 24 of 64"
 
   - id: minimax-h3-encoder-q4km
     hf_repo: leejet/MiniMax-H3-GGUF
@@ -1778,6 +2872,27 @@ models:
           url: https://raw.githubusercontent.com/Comfy-Org/workflow_templates/36ecd0663961c5e1e83f7c0ea521658b33b36bbc/templates/image_flux2_text_to_image.json
         - name: image_flux2.json
           url: https://raw.githubusercontent.com/Comfy-Org/workflow_templates/36ecd0663961c5e1e83f7c0ea521658b33b36bbc/templates/image_flux2.json
+    benchmarks:
+      - name: "Arena text-to-image"
+        score: 1145
+        source: https://arena.ai/leaderboard/text-to-image
+        date: 2026-11-12
+        note: "rank 41 of 85"
+      - name: "Arena image edit"
+        score: 1224
+        source: https://arena.ai/leaderboard/image-edit
+        date: 2026-11-12
+        note: "rank 48 of 64"
+      - name: "Artificial Analysis text-to-image Elo"
+        score: 1000
+        source: https://artificialanalysis.ai/text-to-image
+        date: 2026-11-13
+        note: "position 52 of 112 by Elo; FLUX.2 [dev] is AA's 1000 reference"
+      - name: "Artificial Analysis image editing Elo"
+        score: 1000
+        source: https://artificialanalysis.ai/text-to-image
+        date: 2026-11-13
+        note: "position 54 of 83 by Elo; FLUX.2 [dev] is AA's 1000 reference"
 
   - id: flux2-dev-q8
     hf_repo: city96/FLUX.2-dev-gguf
@@ -1805,6 +2920,27 @@ models:
           url: https://raw.githubusercontent.com/Comfy-Org/workflow_templates/36ecd0663961c5e1e83f7c0ea521658b33b36bbc/templates/image_flux2_text_to_image.json
         - name: image_flux2.json
           url: https://raw.githubusercontent.com/Comfy-Org/workflow_templates/36ecd0663961c5e1e83f7c0ea521658b33b36bbc/templates/image_flux2.json
+    benchmarks:
+      - name: "Arena text-to-image"
+        score: 1145
+        source: https://arena.ai/leaderboard/text-to-image
+        date: 2026-11-12
+        note: "rank 41 of 85"
+      - name: "Arena image edit"
+        score: 1224
+        source: https://arena.ai/leaderboard/image-edit
+        date: 2026-11-12
+        note: "rank 48 of 64"
+      - name: "Artificial Analysis text-to-image Elo"
+        score: 1000
+        source: https://artificialanalysis.ai/text-to-image
+        date: 2026-11-13
+        note: "position 52 of 112 by Elo; FLUX.2 [dev] is AA's 1000 reference"
+      - name: "Artificial Analysis image editing Elo"
+        score: 1000
+        source: https://artificialanalysis.ai/text-to-image
+        date: 2026-11-13
+        note: "position 54 of 83 by Elo; FLUX.2 [dev] is AA's 1000 reference"
 
   - id: flux2-dev-mistral-fp8
     hf_repo: Comfy-Org/Flux-2-Dev
@@ -1866,6 +3002,17 @@ models:
       workflows:
         - name: flux_kontext_dev_basic.json
           url: https://raw.githubusercontent.com/Comfy-Org/workflow_templates/36ecd0663961c5e1e83f7c0ea521658b33b36bbc/templates/flux_kontext_dev_basic.json
+    benchmarks:
+      - name: "Arena image edit"
+        score: 1150
+        source: https://arena.ai/leaderboard/image-edit
+        date: 2026-11-12
+        note: "rank 58 of 64"
+      - name: "Artificial Analysis image editing Elo"
+        score: 881
+        source: https://artificialanalysis.ai/text-to-image
+        date: 2026-11-13
+        note: "position 77 of 83 by Elo"
 
   - id: flux1-kontext-dev-q8
     hf_repo: QuantStack/FLUX.1-Kontext-dev-GGUF
@@ -1888,6 +3035,17 @@ models:
       workflows:
         - name: flux_kontext_dev_basic.json
           url: https://raw.githubusercontent.com/Comfy-Org/workflow_templates/36ecd0663961c5e1e83f7c0ea521658b33b36bbc/templates/flux_kontext_dev_basic.json
+    benchmarks:
+      - name: "Arena image edit"
+        score: 1150
+        source: https://arena.ai/leaderboard/image-edit
+        date: 2026-11-12
+        note: "rank 58 of 64"
+      - name: "Artificial Analysis image editing Elo"
+        score: 881
+        source: https://artificialanalysis.ai/text-to-image
+        date: 2026-11-13
+        note: "position 77 of 83 by Elo"
 
   # ================================================================ video
 
@@ -1923,6 +3081,27 @@ models:
           url: https://raw.githubusercontent.com/Comfy-Org/workflow_templates/36ecd0663961c5e1e83f7c0ea521658b33b36bbc/templates/video_ltx2_5_t2v.json
         - name: video_ltx2_5_i2v.json
           url: https://raw.githubusercontent.com/Comfy-Org/workflow_templates/36ecd0663961c5e1e83f7c0ea521658b33b36bbc/templates/video_ltx2_5_i2v.json
+    benchmarks:
+      - name: "Artificial Analysis text-to-video Elo"
+        score: 942
+        source: https://artificialanalysis.ai/video/leaderboard/text-to-video
+        date: 2026-11-13
+        note: "hosted LTX-2.5 Fast; rank 28 of 34"
+      - name: "Artificial Analysis text-to-video Elo"
+        score: 938
+        source: https://artificialanalysis.ai/video/leaderboard/text-to-video
+        date: 2026-11-13
+        note: "hosted LTX-2.5 Pro; rank 29 of 34"
+      - name: "Artificial Analysis image-to-video Elo"
+        score: 912
+        source: https://artificialanalysis.ai/video/leaderboard/image-to-video
+        date: 2026-11-13
+        note: "hosted LTX-2.5 Pro; rank 31 of 35"
+      - name: "Artificial Analysis image-to-video Elo"
+        score: 912
+        source: https://artificialanalysis.ai/video/leaderboard/image-to-video
+        date: 2026-11-13
+        note: "hosted LTX-2.5 Fast; rank 32 of 35"
 
   - id: ltx-2.5-distilled-q8
     hf_repo: unsloth/LTX-2.5-GGUF
@@ -1949,6 +3128,27 @@ models:
           url: https://raw.githubusercontent.com/Comfy-Org/workflow_templates/36ecd0663961c5e1e83f7c0ea521658b33b36bbc/templates/video_ltx2_5_t2v.json
         - name: video_ltx2_5_i2v.json
           url: https://raw.githubusercontent.com/Comfy-Org/workflow_templates/36ecd0663961c5e1e83f7c0ea521658b33b36bbc/templates/video_ltx2_5_i2v.json
+    benchmarks:
+      - name: "Artificial Analysis text-to-video Elo"
+        score: 942
+        source: https://artificialanalysis.ai/video/leaderboard/text-to-video
+        date: 2026-11-13
+        note: "hosted LTX-2.5 Fast; rank 28 of 34"
+      - name: "Artificial Analysis text-to-video Elo"
+        score: 938
+        source: https://artificialanalysis.ai/video/leaderboard/text-to-video
+        date: 2026-11-13
+        note: "hosted LTX-2.5 Pro; rank 29 of 34"
+      - name: "Artificial Analysis image-to-video Elo"
+        score: 912
+        source: https://artificialanalysis.ai/video/leaderboard/image-to-video
+        date: 2026-11-13
+        note: "hosted LTX-2.5 Pro; rank 31 of 35"
+      - name: "Artificial Analysis image-to-video Elo"
+        score: 912
+        source: https://artificialanalysis.ai/video/leaderboard/image-to-video
+        date: 2026-11-13
+        note: "hosted LTX-2.5 Fast; rank 32 of 35"
 
   - id: ltx-2.5-gemma4-encoder
     hf_repo: unsloth/LTX-2.5-GGUF
@@ -2032,6 +3232,12 @@ models:
       workflows:
         - name: video_wan2_2_14B_i2v.json
           url: https://raw.githubusercontent.com/Comfy-Org/workflow_templates/36ecd0663961c5e1e83f7c0ea521658b33b36bbc/templates/video_wan2_2_14B_i2v.json
+    benchmarks:
+      - name: "Arena image-to-video"
+        score: 1171
+        source: https://arena.ai/leaderboard/image-to-video
+        date: 2026-11-08
+        note: "Wan 2.2 A14B; rank 45 of 50"
 
   - id: wan2.2-t2v-a14b-q4km
     hf_repo: QuantStack/Wan2.2-T2V-A14B-GGUF
@@ -2057,6 +3263,12 @@ models:
       workflows:
         - name: video_wan2_2_14B_t2v.json
           url: https://raw.githubusercontent.com/Comfy-Org/workflow_templates/36ecd0663961c5e1e83f7c0ea521658b33b36bbc/templates/video_wan2_2_14B_t2v.json
+    benchmarks:
+      - name: "Arena text-to-video"
+        score: 1132
+        source: https://arena.ai/leaderboard/text-to-video
+        date: 2026-11-08
+        note: "Wan 2.2 A14B; rank 44 of 50"
 
   - id: wan-umt5-xxl-fp8
     hf_repo: Comfy-Org/Wan-2.2
