@@ -24,6 +24,8 @@ From one YAML file, `hfarchive`:
 - archives pinned runtimes (llama.cpp, ComfyUI, custom nodes) as full git
   history bundles, source tarballs and GitHub release builds;
 - writes an `INDEX.md` at the drive root that you can read without the tool;
+- puts each model's benchmarks, the selection's models guide and the config
+  used on the drive, so the archive explains what it holds and why;
 - records every file's size and hash in a manifest, so `--check` can show
   years later that nothing has rotted.
 
@@ -136,6 +138,7 @@ defaults:
   max_workers_per_repo: 8  # files in parallel within one repo
 
 default_profile: small     # optional
+guide: docs/models-2026-11.md  # optional: a Markdown guide to this selection
 
 profiles:
   small:
@@ -162,6 +165,12 @@ models:
     approx_bytes: 4683079206
     enabled: true
     notes: One quant out of the dozen the repo ships.
+    benchmarks:
+      - name: HumanEval
+        score: 88.4
+        source: https://huggingface.co/Qwen/Qwen2.5-Coder-7B-Instruct
+        date: 2026-11-13       # when it was read
+        note: self-reported
     usage:
       runtime: llama.cpp
       notes: |
@@ -199,6 +208,24 @@ Every top-level section is optional except `models`.
 | `usage.runtime` | | What runs the model. Free text; when it matches a `runtimes[].id`, that runtime is archived with the model. |
 | `usage.notes` | | Recommended settings: temperature, sampler and steps, CLI flags. Written to `USAGE.md`. |
 | `usage.workflows` | | List of `{name, url}`. Each URL is downloaded to `_workflows/<name>` in the model's folder. Pin URLs to a commit. |
+| `benchmarks` | | List of published scores, written to a table in `USAGE.md`. The first three appear in `INDEX.md`, so list the headline ones first. |
+| `benchmarks[].name` | yes | Benchmark name, e.g. `SWE-bench Verified`. |
+| `benchmarks[].score` | yes | A number, or a short string such as `1156 Elo` (up to 40 characters). |
+| `benchmarks[].source` | yes | `http(s)` URL where the number was published. |
+| `benchmarks[].date` | | When the number was published or read, e.g. `2026-11-13`. |
+| `benchmarks[].note` | | Free text, e.g. `self-reported, OpenHands harness`. |
+
+Published scores are for the full-precision model; the archived quants score
+lower, and `USAGE.md` says so.
+
+`guide` (top level) names a Markdown guide to the selection: a path or an
+`http(s)` URL. Each download run copies it to the drive root under its own
+file name. A path is looked up against the config file's directory, then
+against the directory of the `hfarchive` script (a clone of this repo), then
+in this repo on GitHub at the running version's tag and then at `main`. A
+config written by `--init` therefore finds its guide without edits. If the
+guide cannot be found, the run reports it and exits 1, and everything else
+still lands.
 
 `README.md` and `LICENSE*` at the repo root are always downloaded, even when
 `include` or `exclude` would leave them out.
@@ -249,7 +276,8 @@ requests per hour, and a run that hits the limit says so.
 
 Each successful download records, in the manifest, every file's path and size
 and the hash the Hub publishes for it: sha256 for LFS files (the weights), the
-git blob sha1 for the rest. Runtime files and workflows get a sha256.
+git blob sha1 for the rest. Runtime files, workflows, the guide and the
+config copies get a sha256.
 
 ```bash
 hfarchive --check --dest /mnt/backup          # rehash everything
@@ -297,10 +325,11 @@ run continues. Tokens are never printed or written to logs or the manifest.
 ```
 /mnt/backup/
 ├── INDEX.md                              what is here, readable without hfarchive
+├── models-2026-11.md                     the selection's guide (`guide:`), if set
 ├── llm/unsloth/Qwen3.8-Flash-Next-GGUF/
 │   ├── UD-Q3_K_XL/…                       the weights, as in the repo
 │   ├── README.md                          the model card
-│   └── USAGE.md                           runtime, settings, workflows
+│   └── USAGE.md                           runtime, settings, workflows, benchmarks
 ├── image/black-forest-labs/FLUX.2-dev/
 │   ├── …
 │   ├── USAGE.md
@@ -313,6 +342,8 @@ run continues. Tokens are never printed or written to logs or the manifest.
 │       └── release-b6100/…
 └── _hfarchive/
     ├── manifest.jsonl
+    ├── config-latest.yaml                 the config of the latest run
+    ├── configs/<name>-<YYYYMMDD-HHMMSS>.yaml   the config of every run
     └── logs/
 ```
 
@@ -324,8 +355,12 @@ and one `USAGE.md` with a section per entry.
 `INDEX.md` is rewritten after every download run, even when everything was
 already current. It lists every
 archived model by category with its repo, revision and commit, size, runtime,
-`USAGE.md` and workflows, and every runtime with its ref and commit. It
-covers everything in the manifest, not only the current config.
+headline benchmarks, `USAGE.md` and workflows, and every runtime with its ref
+and commit. At the top it links the guide and the config of the latest run.
+It covers everything in the manifest, not only the current config.
+
+Every run that downloads copies the config it used into `_hfarchive/`, with
+a timestamp, so you can tell later which selection produced the drive.
 
 `manifest.jsonl` is append-only. It gets one line per model and per runtime
 per run: id, repo, commit, status, sizes, licence, timestamp, and the file
@@ -352,7 +387,7 @@ and copied to `_hfarchive/logs/` after any run that downloaded something.
 | Code | Meaning |
 |---:|---|
 | 0 | Success, a clean dry run, or a clean `--check` |
-| 1 | A model, runtime or workflow download failed (the rest of the run completes); `--verify-only` found a missing repo; `--refresh-sizes` could not measure a repo; `--check` found a missing or damaged file |
+| 1 | A model, runtime, workflow or guide download failed (the rest of the run completes); `--verify-only` found a missing repo; `--refresh-sizes` could not measure a repo; `--check` found a missing or damaged file |
 | 2 | Config error, empty selection, bad destination, not enough space, or `--check` without a destination or manifest |
 | 3 | Refused: an entry is at or above the large-repo threshold |
 

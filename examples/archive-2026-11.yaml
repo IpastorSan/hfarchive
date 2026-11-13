@@ -46,6 +46,8 @@
 
 default_profile: core
 
+guide: docs/models-2026-11.md
+
 defaults:
   min_free_gb: 50          # refuse to download with less headroom than this
   large_repo_gb: 100       # entries at/above this need --allow-large

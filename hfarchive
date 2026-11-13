@@ -16,6 +16,7 @@ from __future__ import annotations
 import argparse
 import concurrent.futures as cf
 import contextlib
+import datetime
 import fnmatch
 import functools
 import hashlib
@@ -30,6 +31,7 @@ import sys
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -48,12 +50,15 @@ __version__ = "1.1.0"
 DEFAULT_CONFIG = "models.yaml"
 # The curated selection `--init` writes and a clone falls back to.
 CURATED_CONFIG = "archive-2026-11.yaml"
-CURATED_URL = ("https://raw.githubusercontent.com/IpastorSan/hfarchive/{ref}/examples/"
-               + CURATED_CONFIG)
+# Raw files of this repo at a ref; the curated config and its guide come from here.
+REPO_RAW_URL = "https://raw.githubusercontent.com/IpastorSan/hfarchive/{ref}/{path}"
+CURATED_URL = REPO_RAW_URL.replace("{path}", "examples/" + CURATED_CONFIG)
 DEST_ENV = "HFARCHIVE_DEST"
 HF_BIN_ENV = "HFARCHIVE_HF_BIN"
 BOOKKEEPING_DIR = "_hfarchive"
 MANIFEST_NAME = "manifest.jsonl"
+CONFIGS_DIR = "configs"
+CONFIG_LATEST = "config-latest.yaml"
 RUNTIMES_DIR = "_runtimes"
 INDEX_NAME = "INDEX.md"
 USAGE_NAME = "USAGE.md"
@@ -122,6 +127,50 @@ class Usage:
                    notes=body.get("notes"), workflows=workflows)
 
 
+BENCHMARK_SCORE_MAX_CHARS = 40
+
+
+@dataclass
+class Benchmark:
+    """A published score for the full-precision model, with its source."""
+    name: str
+    score: float | int | str
+    source: str
+    date: str | None = None
+    note: str | None = None
+
+    @classmethod
+    def parse(cls, model_id: str, body: dict) -> Benchmark:
+        what = f"model {model_id!r} benchmark"
+        _check_keys(what, body, set(cls.__dataclass_fields__), {"name", "score", "source"})
+        name, score, source = body["name"], body["score"], body["source"]
+        if not isinstance(name, str) or not name.strip():
+            raise CatalogError(f"{what}: name must be a non-empty string")
+        numeric = isinstance(score, (int, float)) and not isinstance(score, bool)
+        if not numeric and not (isinstance(score, str) and score.strip()
+                                and len(score) <= BENCHMARK_SCORE_MAX_CHARS):
+            raise CatalogError(f"{what} {name!r}: score must be a number or a short string")
+        if not is_url(source):
+            raise CatalogError(f"{what} {name!r}: source must be an http(s) URL")
+        date = body.get("date")
+        if date is not None and not isinstance(date, (str, datetime.date)):
+            raise CatalogError(f"{what} {name!r}: date must be a date such as 2026-11-13")
+        note = body.get("note")
+        if note is not None and not isinstance(note, str):
+            raise CatalogError(f"{what} {name!r}: note must be a string")
+        # YAML reads 2026-11-13 as a date; keep it as text for Markdown and JSON.
+        return cls(name=name, score=score, source=source,
+                   date=str(date) if date is not None else None, note=note)
+
+    @property
+    def headline(self) -> str:
+        return f"{self.name} {self.score}"
+
+
+def is_url(value: object) -> bool:
+    return isinstance(value, str) and value.startswith(("https://", "http://"))
+
+
 _GITHUB_REPO = re.compile(r"github\.com[:/]([^/]+)/([^/]+?)(?:\.git)?/?$")
 
 
@@ -178,6 +227,7 @@ class Model:
     enabled: bool = True
     notes: str | None = None
     usage: Usage | None = None
+    benchmarks: list[Benchmark] = field(default_factory=list)
 
     @property
     def org(self) -> str:
@@ -228,6 +278,7 @@ class Catalog:
     models: list[Model]
     default_profile: str | None = None
     runtimes: list[Runtime] = field(default_factory=list)
+    guide: str | None = None
 
     def by_id(self, model_id: str) -> Model:
         for m in self.models:
@@ -341,6 +392,9 @@ def load_catalog(path: str | Path) -> Catalog:
         m = Model(**entry)
         if m.usage is not None:
             m.usage = Usage.parse(m.id, m.usage)
+        if not isinstance(m.benchmarks, list):
+            raise CatalogError(f"model {m.id!r}: benchmarks must be a list")
+        m.benchmarks = [Benchmark.parse(m.id, b) for b in m.benchmarks]
         if m.id in seen:
             raise CatalogError(f"duplicate model id: {m.id}")
         if "/" not in m.hf_repo:
@@ -355,8 +409,12 @@ def load_catalog(path: str | Path) -> Catalog:
     if len(rt_ids) != len(set(rt_ids)):
         raise CatalogError("duplicate runtime ids")
 
+    guide = raw.get("guide")
+    if guide is not None:
+        check_guide(guide)
+
     return Catalog(path=path, defaults=defaults, profiles=profiles, models=models,
-                   default_profile=default_profile, runtimes=runtimes)
+                   default_profile=default_profile, runtimes=runtimes, guide=guide)
 
 
 _ID_LINE = re.compile(r"^\s*-\s+id:\s*(\S+)\s*$")
@@ -408,6 +466,9 @@ STARTER_CONFIG = """\
 #   enabled      false = skipped unless a profile opts in or --enable is used
 #   notes        free text
 #   usage        how to run it: runtime, recommended settings, workflow files
+#   benchmarks   published scores: [{name, score, source, date, note}]
+#
+# A top-level `guide:` (path or URL of a Markdown guide) is copied to the drive.
 #
 # README.md and LICENSE* files are always downloaded, whatever the globs say.
 #
@@ -491,9 +552,19 @@ models:
 """
 
 
+def repo_root() -> Path:
+    """The script's own directory: the repo root when it runs from a clone."""
+    return Path(__file__).resolve().parent
+
+
+def repo_raw_urls(path: str) -> list[str]:
+    """`path` in this repo on GitHub: at this version's tag, then on main."""
+    return [REPO_RAW_URL.format(ref=ref, path=path) for ref in (f"v{__version__}", "main")]
+
+
 def curated_in_clone() -> Path | None:
     """The curated selection, when the script runs from a clone of its repo."""
-    path = Path(__file__).resolve().parent / "examples" / CURATED_CONFIG
+    path = repo_root() / "examples" / CURATED_CONFIG
     return path if path.is_file() else None
 
 
@@ -508,8 +579,7 @@ def curated_text() -> str:
     if local:
         return local.read_text()
     errors = []
-    for ref in (f"v{__version__}", "main"):
-        url = CURATED_URL.format(ref=ref)
+    for url in repo_raw_urls("examples/" + CURATED_CONFIG):
         try:
             return fetch_text(url)
         except (urllib.error.URLError, OSError) as exc:
@@ -893,6 +963,8 @@ def manifest_append(dest: Path, results: list[DownloadResult],
             "runtime": m.usage.runtime if m.usage else None,
             "message": res.message or None,
         }
+        if m.benchmarks:
+            record["benchmarks"] = [asdict(b) for b in m.benchmarks]
         if st and res.status in GOOD_STATUSES:
             record["checksums"] = checksum_records(st)
         record.update((extras or {}).get(m.id, {}))
@@ -988,6 +1060,19 @@ def check_items(dest: Path, records: list[dict]) -> tuple[list[CheckItem], list[
         for art in rec.get("artifacts") or []:
             items.append(CheckItem(f"runtime {rid}: {art['path']}", Path(dest) / art["path"],
                                    art.get("size"), "sha256", art.get("sha256")))
+    # Every dated config copy stays; config-latest.yaml is overwritten each run,
+    # so a path takes the hash of the newest record that wrote it.
+    configs: dict[str, CheckItem] = {}
+    for rec in records:
+        if rec.get("kind") == "config" and rec.get("status") in GOOD_STATUSES:
+            for art in rec.get("artifacts") or []:
+                configs[art["path"]] = CheckItem(f"config: {art['path']}",
+                                                 Path(dest) / art["path"], art.get("size"),
+                                                 "sha256", art.get("sha256"))
+    items += configs.values()
+    for name, rec in latest_records(records, "guide").items():
+        items.append(CheckItem(f"guide: {name}", Path(dest) / rec["path"], rec.get("size"),
+                               "sha256", rec.get("sha256")))
     return items, unverifiable
 
 
@@ -1034,6 +1119,109 @@ def cmd_check(dest: Path, fast: bool, as_json: bool) -> int:
         return 1
     log.info("all %d files intact (%s)", len(items), mode)
     return 0
+
+
+# =========================================================== guide, config
+def guide_name(guide: str) -> str:
+    """The file name the guide gets at the drive root."""
+    if is_url(guide):
+        return urllib.parse.urlsplit(guide).path.rsplit("/", 1)[-1]
+    return Path(guide).name
+
+
+def check_guide(guide: object) -> None:
+    if not isinstance(guide, str) or not guide.strip():
+        raise CatalogError("guide must be a path or an https URL")
+    if "://" in guide and not is_url(guide):
+        raise CatalogError(f"guide {guide!r}: only http(s) URLs are supported")
+    name = guide_name(guide)
+    if not SAFE_NAME.match(name) or name == INDEX_NAME:
+        raise CatalogError(f"guide {guide!r} must end in a plain file name other than "
+                           f"{INDEX_NAME}")
+
+
+def guide_sources(cat: Catalog) -> list[Path | str]:
+    """Where to look for the guide, in order: a URL as given; else the path
+    against the config's directory, the script's directory (a clone), and
+    this repo on GitHub. The last two serve configs written by --init."""
+    guide = cat.guide
+    if not guide:
+        return []
+    if is_url(guide):
+        return [guide]
+    path = Path(guide).expanduser()
+    if path.is_absolute():
+        return [path]
+    sources: list[Path | str] = [cat.path.resolve().parent / path]
+    if ".." not in path.parts:
+        sources += [repo_root() / path, *repo_raw_urls(path.as_posix())]
+    return sources
+
+
+def guide_source(cat: Catalog) -> Path | str | None:
+    """The first local file that exists, else the first URL to try. No network."""
+    sources = guide_sources(cat)
+    for src in sources:
+        if isinstance(src, Path) and src.is_file():
+            return src
+    return next((s for s in sources if isinstance(s, str)), sources[0] if sources else None)
+
+
+def describe_guide(cat: Catalog) -> str | None:
+    """One line for --list and --dry-run: the guide and where it will come from."""
+    src = guide_source(cat)
+    if src is None:
+        return None
+    if isinstance(src, Path):
+        where = f"from {src}" if src.is_file() else f"not found at {src}"
+    else:
+        later = [s for s in guide_sources(cat) if isinstance(s, str)][1:]
+        where = f"from {src}" + (f", else {later[0]}" if later else "")
+    return f"{cat.guide} -> <DEST>/{guide_name(cat.guide)} ({where})"
+
+
+def copy_file(src: Path, target: Path) -> tuple[int, str]:
+    """Copy atomically; return (size, sha256) of the copy."""
+    target.parent.mkdir(parents=True, exist_ok=True)
+    with atomic_target(target) as part:
+        shutil.copyfile(src, part)
+    return target.stat().st_size, hash_file(target, "sha256")
+
+
+def archive_guide(cat: Catalog, dest: Path) -> dict:
+    """Copy or download the guide to $DEST/<name>; a manifest record either way."""
+    name = guide_name(cat.guide)
+    target = Path(dest) / name
+    record = {"kind": "guide", "id": name, "guide": cat.guide, "path": name}
+    errors = []
+    for src in guide_sources(cat):
+        try:
+            if isinstance(src, Path):
+                if not src.is_file():
+                    errors.append(f"{src}: not found")
+                    continue
+                size, sha = copy_file(src, target)
+            else:
+                size, sha = fetch_url(src, target)
+        except (urllib.error.URLError, OSError) as exc:
+            errors.append(f"{src}: {exc}")
+            continue
+        return {**record, "status": "downloaded", "source": str(src), "size": size,
+                "sha256": sha}
+    return {**record, "status": "failed", "message": "; ".join(errors)}
+
+
+def archive_config(config: Path, dest: Path) -> dict:
+    """Copy the config to _hfarchive/configs/<stem>-<time>.yaml and config-latest.yaml."""
+    d = bookkeeping_dir(dest)
+    stamped = d / CONFIGS_DIR / f"{config.stem}-{time.strftime('%Y%m%d-%H%M%S')}.yaml"
+    artifacts = []
+    for target, kind in ((stamped, "copy"), (d / CONFIG_LATEST, "latest")):
+        size, sha = copy_file(config, target)
+        artifacts.append({"path": os.path.relpath(target, dest), "size": size,
+                          "sha256": sha, "kind": kind})
+    return {"kind": "config", "id": "config", "status": "downloaded",
+            "source": str(config.resolve()), "artifacts": artifacts}
 
 
 # ================================================================ http
@@ -1307,6 +1495,11 @@ def runtime_records(results: list[RuntimeResult], dest: Path) -> list[dict]:
 
 
 # =================================================================== usage
+BENCHMARK_CAVEAT = ("Published scores are for the full-precision model; "
+                    "the archived quant scores lower.")
+HEADLINE_BENCHMARKS = 3
+
+
 def usage_markdown(entries: list[Model], model_dir: Path, dest: Path, cat: Catalog,
                    commits: dict[str, str | None]) -> str:
     """USAGE.md for one folder; several entries may share a repo folder."""
@@ -1336,25 +1529,36 @@ def usage_markdown(entries: list[Model], model_dir: Path, dest: Path, cat: Catal
             lines += ["### Workflows", ""]
             lines += [f"- `{WORKFLOWS_DIR}/{wf.name}` (from <{wf.url}>)" for wf in u.workflows]
             lines.append("")
+        if m.benchmarks:
+            lines += ["### Benchmarks", "", BENCHMARK_CAVEAT, "",
+                      "| Benchmark | Score | Source | Date | Note |", "|---|---:|---|---|---|"]
+            lines += [f"| {_cell(b.name)} | {_cell(b.score)} | <{b.source}> | "
+                      f"{_cell(b.date or '-')} | {_cell(b.note or '-')} |" for b in m.benchmarks]
+            lines.append("")
         if m.notes:
             lines += ["### Notes", "", m.notes.rstrip(), ""]
     return "\n".join(lines)
 
 
+def has_usage_md(m: Model) -> bool:
+    return bool(m.usage or m.benchmarks)
+
+
 def write_usage_files(models: list[Model], dest: Path, cat: Catalog,
                       commits: dict[str, str | None]) -> dict[str, dict]:
-    """Fetch workflows and write USAGE.md for each model with `usage`.
+    """Fetch workflows and write USAGE.md for each model with `usage` or
+    `benchmarks`.
 
     Returns per-id manifest fields; a workflow that fails carries an `error`.
     """
     extras: dict[str, dict] = {}
     for m in models:
-        if not m.usage:
+        if not has_usage_md(m):
             continue
         model_dir = m.dest_dir(dest)
         model_dir.mkdir(parents=True, exist_ok=True)
         workflows = []
-        for wf in m.usage.workflows:
+        for wf in (m.usage.workflows if m.usage else []):
             path = model_dir / WORKFLOWS_DIR / wf.name
             entry = {"name": wf.name, "url": wf.url, "path": os.path.relpath(path, dest)}
             try:
@@ -1363,7 +1567,7 @@ def write_usage_files(models: list[Model], dest: Path, cat: Catalog,
                 entry["error"] = str(exc)
                 log.error("%s: workflow %s FAILED — %s", m.id, wf.name, exc)
             workflows.append(entry)
-        sharing = [x for x in cat.models if x.usage and x.dest_dir(dest) == model_dir]
+        sharing = [x for x in cat.models if has_usage_md(x) and x.dest_dir(dest) == model_dir]
         usage = model_dir / USAGE_NAME
         usage.write_text(usage_markdown(sharing or [m], model_dir, dest, cat, commits),
                          encoding="utf-8")
@@ -1380,6 +1584,23 @@ def _link(text: str, path: str) -> str:
     return f"[{_cell(text)}](<{path}>)"
 
 
+def index_links(records: list[dict]) -> list[str]:
+    """Links to the archived guide(s) and the config of the latest run."""
+    lines = [f"- Selection guide: {_link(name, rec['path'])}"
+             for name, rec in latest_records(records, "guide").items()]
+    if latest_records(records, "config"):
+        configs = f"{BOOKKEEPING_DIR}/{CONFIGS_DIR}/"
+        lines.append(f"- Config of the latest run: "
+                     f"{_link(CONFIG_LATEST, f'{BOOKKEEPING_DIR}/{CONFIG_LATEST}')}; "
+                     f"every run's config is in {_link(configs, configs)}")
+    return lines + [""] if lines else []
+
+
+def headline_benchmarks(rec: dict) -> str:
+    return "; ".join(_cell(f"{b['name']} {b['score']}")
+                     for b in (rec.get("benchmarks") or [])[:HEADLINE_BENCHMARKS]) or "-"
+
+
 def index_markdown(records: list[dict]) -> str:
     models = latest_records(records, "model")
     runtimes = latest_records(records, "runtime")
@@ -1388,10 +1609,12 @@ def index_markdown(records: list[dict]) -> str:
         "# Model archive", "",
         f"Regenerated by hfarchive {__version__} on {time.strftime('%Y-%m-%d %H:%M %Z')} "
         f"from `{BOOKKEEPING_DIR}/{MANIFEST_NAME}`.", "",
+        *index_links(records),
         "Each model folder is a plain snapshot of a Hugging Face repo at the commit shown, "
         "laid out as `<category>/<org>/<repo>/`. Point llama.cpp, ComfyUI or "
         "`from_pretrained()` at it. `USAGE.md` holds the recommended settings and "
-        f"`{WORKFLOWS_DIR}/` the workflow files.", "",
+        f"benchmarks, `{WORKFLOWS_DIR}/` the workflow files. Benchmarks are published "
+        "scores for the full-precision model; the archived quants score lower.", "",
         "Integrity: the manifest records every file's size and hash (sha256 for LFS "
         "files, git blob sha1 for the rest). `hfarchive --check --dest <this drive>` "
         "recomputes them; without hfarchive, `sha256sum <file>` or "
@@ -1406,8 +1629,9 @@ def index_markdown(records: list[dict]) -> str:
         by_cat.setdefault(rec.get("category") or "?", []).append(rec)
     for category in sorted(by_cat):
         out += [f"### {category}", "",
-                "| Model | Repo | Revision / commit | Size | Runtime | Usage | Workflows |",
-                "|---|---|---|---:|---|---|---|"]
+                "| Model | Repo | Revision / commit | Size | Runtime | Benchmarks | Usage "
+                "| Workflows |",
+                "|---|---|---|---:|---|---|---|---|"]
         for rec in sorted(by_cat[category], key=lambda r: r["id"]):
             wfs = ", ".join(_link(w["name"], w["path"]) for w in rec.get("workflows") or []
                             if w.get("path") and not w.get("error")) or "-"
@@ -1418,6 +1642,7 @@ def index_markdown(records: list[dict]) -> str:
                 f"`{_cell(rec.get('revision') or 'main')}` @ `{rec.get('commit') or '?'}`",
                 human(rec.get("bytes_matched") or 0),
                 _cell(rec.get("runtime") or "-"),
+                headline_benchmarks(rec),
                 usage, wfs,
             ]) + " |")
         out.append("")
@@ -1632,6 +1857,14 @@ def usage_json(m: Model) -> dict | None:
     return asdict(m.usage) if m.usage else None
 
 
+def guide_json(cat: Catalog) -> dict | None:
+    if not cat.guide:
+        return None
+    src = guide_source(cat)
+    return {"guide": cat.guide, "name": guide_name(cat.guide),
+            "source": str(src) if src is not None else None}
+
+
 def cmd_list(cat: Catalog, models: list[Model], runtimes: list[Runtime], args) -> int:
     prof = cat.profile(args.profile)
     if args.json:
@@ -1647,10 +1880,12 @@ def cmd_list(cat: Catalog, models: list[Model], runtimes: list[Runtime], args) -
                         "approx_bytes": m.approx_bytes, "enabled": m.enabled,
                         "include": m.include, "exclude": m.exclude, "notes": m.notes,
                         "usage": usage_json(m),
+                        "benchmarks": [asdict(b) for b in m.benchmarks],
                     }
                     for m in models
                 ],
                 "runtimes": [runtime_json(rt) for rt in runtimes],
+                "guide": guide_json(cat),
             },
             indent=2,
         ))
@@ -1661,15 +1896,18 @@ def cmd_list(cat: Catalog, models: list[Model], runtimes: list[Runtime], args) -
     rows = [
         [m.id, m.hf_repo, m.category,
          human(m.approx_bytes) if m.approx_bytes else "?",
-         m.license or "?", flag_str(m)]
+         m.license or "?", str(len(m.benchmarks)) if m.benchmarks else "-", flag_str(m)]
         for m in models
     ]
     print(render_table(
-        ["ID", "HF REPO", "CATEGORY", "APPROX", "LICENSE", "FLAGS"], rows, "lllrll"))
+        ["ID", "HF REPO", "CATEGORY", "APPROX", "LICENSE", "BENCH", "FLAGS"], rows, "lllrlrl"))
     known = sum(m.approx_bytes for m in models)
     unknown = sum(1 for m in models if not m.approx_bytes)
     print(f"\n{len(models)} models, approx {human(known)}"
           + (f" (+{unknown} unmeasured; run --refresh-sizes)" if unknown else ""))
+    guide = describe_guide(cat)
+    if guide:
+        print(f"guide: {guide}")
     extras = render_extras(models, runtimes)
     if extras:
         print("\n" + extras)
@@ -1824,6 +2062,7 @@ def cmd_plan(cat: Catalog, models: list[Model], runtimes: list[Runtime], args,
             human(s.matched_bytes) if s.exists else "-",
             human(r["missing"]) if s.exists else "-",
             "yes" if m.gated else "no",
+            str(len(m.benchmarks)) if m.benchmarks else "-",
             str(m.dest_dir(dest)) if dest else f"<DEST>/{m.category}/{m.org}/{m.name}",
             note,
         ])
@@ -1839,6 +2078,7 @@ def cmd_plan(cat: Catalog, models: list[Model], runtimes: list[Runtime], args,
                 "bytes_missing": r["missing"], "bytes_present": r["present"],
                 "commit": r["status"].commit,
                 "dest": str(r["model"].dest_dir(dest)) if dest else None,
+                "benchmarks": len(r["model"].benchmarks),
                 "workflows": [
                     {"name": w.name, "url": w.url, "size": wf_sizes.get((r["model"].id, w.name))}
                     for w in (r["model"].usage.workflows if r["model"].usage else [])
@@ -1850,11 +2090,11 @@ def cmd_plan(cat: Catalog, models: list[Model], runtimes: list[Runtime], args,
                 "assets": [{"name": a["name"], "size": a["size"]} for a in st.assets],
                 "archived": st.archived, "error": st.error,
             } for st in rt_statuses
-        ], indent=2))
+        ] + ([{"kind": "guide", **guide_json(cat)}] if cat.guide else []), indent=2))
     else:
         print(render_table(
-            ["ID", "HF REPO", "FILES", "MATCHED", "TO FETCH", "GATED", "DEST", "NOTE"],
-            table, "lllrrlll"))
+            ["ID", "HF REPO", "FILES", "MATCHED", "TO FETCH", "GATED", "BENCH", "DEST", "NOTE"],
+            table, "lllrrlrll"))
         extras = render_extras(models, runtimes, rt_by_id, wf_sizes)
         if extras:
             print("\n" + extras)
@@ -1885,6 +2125,8 @@ def cmd_plan(cat: Catalog, models: list[Model], runtimes: list[Runtime], args,
     for st in rt_statuses:
         if st.error:
             log.error("runtime %s: %s", st.runtime.id, st.error)
+    if cat.guide:
+        log.info("guide: %s", describe_guide(cat))
     if oversized:
         log.warning("%d repo(s) are >= %s each: %s",
                     len(oversized), human(large_bytes),
@@ -1952,6 +2194,20 @@ def cmd_plan(cat: Catalog, models: list[Model], runtimes: list[Runtime], args,
     if rt_results:
         manifest_write(dest, runtime_records(rt_results, dest))
 
+    # The config and guide are small and explain the archive, so they go
+    # before the long model downloads too.
+    meta = [archive_config(cat.path, dest)]
+    if cat.guide:
+        meta.append(archive_guide(cat, dest))
+    manifest_write(dest, meta)
+    guide_failed = [r for r in meta if r["status"] == "failed"]
+    for rec in meta:
+        if rec["status"] == "failed":
+            log.error("guide %s: FAILED — %s", rec["guide"], rec["message"])
+        else:
+            log.info("%s archived: %s", rec["kind"], rec.get("path") or
+                     ", ".join(a["path"] for a in rec["artifacts"]))
+
     results = download_many(
         [r["status"] for r in to_run], dest, hf_bin, jobs, max_workers, have_token)
 
@@ -1983,7 +2239,9 @@ def cmd_plan(cat: Catalog, models: list[Model], runtimes: list[Runtime], args,
         log.error("  runtime %s: %s", r.runtime.id, r.message)
     for mid, wf in wf_failed:
         log.error("  %s: workflow %s: %s", mid, wf["name"], wf["error"])
-    return (1 if failed or rt_failed or wf_failed else 0), True
+    for rec in guide_failed:
+        log.error("  guide %s: %s", rec["guide"], rec["message"])
+    return (1 if failed or rt_failed or wf_failed or guide_failed else 0), True
 
 
 def cmd_refresh_sizes(cat: Catalog, models: list[Model], args) -> int:

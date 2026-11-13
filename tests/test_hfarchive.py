@@ -16,6 +16,7 @@ import importlib.machinery
 import importlib.util
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -1143,3 +1144,309 @@ def test_full_run_writes_usage_index_runtimes_and_passes_check(tmp_path, monkeyp
     flip_one_byte(dest / "image" / "org" / "flux" / "flux.safetensors")
     assert check(dest, "--fast") == 0
     assert check(dest) == 1
+
+
+# ------------------------------------------------- benchmarks and the guide
+BENCH_CONFIG = """\
+guide: docs/guide.md
+models:
+  - id: coder
+    hf_repo: org/coder-GGUF
+    category: llm
+    benchmarks:
+      - name: SWE-bench Verified
+        score: 70.6
+        source: https://example.org/card
+        date: 2026-11-13
+        note: self-reported, OpenHands harness
+      - {name: LiveCodeBench, score: 81, source: https://example.org/lcb}
+      - {name: Arena, score: 1156 Elo, source: https://example.org/arena}
+      - {name: GPQA Diamond, score: 77.2, source: https://example.org/gpqa}
+  - id: plain
+    hf_repo: org/plain
+    category: text
+"""
+
+
+def bench_catalog(tmp_path, body=BENCH_CONFIG):
+    return hfa.load_catalog(write_config(tmp_path / "b.yaml", body))
+
+
+def test_benchmarks_and_guide_parse(tmp_path):
+    cat = bench_catalog(tmp_path)
+    assert cat.guide == "docs/guide.md"
+    swe, lcb, arena, _ = cat.by_id("coder").benchmarks
+    assert (swe.score, swe.date, swe.note) == (70.6, "2026-11-13", "self-reported, OpenHands harness")
+    assert (lcb.score, lcb.date) == (81, None)
+    assert arena.score == "1156 Elo" and arena.headline == "Arena 1156 Elo"
+    assert cat.by_id("plain").benchmarks == []
+
+
+@pytest.mark.parametrize("snippet, message", [
+    ("    benchmarks: {name: x}\n", "must be a list"),
+    ("    benchmarks: [{name: x, score: 1}]\n", "missing"),
+    ("    benchmarks: [{name: x, score: 1, source: https://e.org, url: u}]\n", "unknown keys"),
+    ("    benchmarks: [{name: '', score: 1, source: https://e.org}]\n", "name"),
+    ("    benchmarks: [{name: x, score: true, source: https://e.org}]\n", "score"),
+    ("    benchmarks: [{name: x, score: [1], source: https://e.org}]\n", "score"),
+    ("    benchmarks: [{name: x, score: '" + "9" * 41 + "', source: https://e.org}]\n", "score"),
+    ("    benchmarks: [{name: x, score: 1, source: e.org/card}]\n", "http"),
+    ("    benchmarks: [{name: x, score: 1, source: https://e.org, date: 3}]\n", "date"),
+    ("    benchmarks: [{name: x, score: 1, source: https://e.org, note: [a]}]\n", "note"),
+    ("    benchmarks: [nope]\n", "mapping"),
+])
+def test_malformed_benchmarks_are_rejected(tmp_path, snippet, message):
+    body = "models:\n  - id: a\n    hf_repo: o/a\n    category: t\n" + snippet
+    with pytest.raises(hfa.CatalogError, match=message):
+        hfa.load_catalog(write_config(tmp_path / "m.yaml", body))
+
+
+@pytest.mark.parametrize("guide, message", [
+    ("''", "path or an https URL"),
+    ("[a.md]", "path or an https URL"),
+    ("ftp://example.org/g.md", "http"),
+    ("docs/INDEX.md", "plain file name"),
+    ("https://example.org/", "plain file name"),
+])
+def test_malformed_guide_is_rejected(tmp_path, guide, message):
+    body = f"guide: {guide}\nmodels:\n  - {{id: a, hf_repo: o/a, category: t}}\n"
+    with pytest.raises(hfa.CatalogError, match=message):
+        hfa.load_catalog(write_config(tmp_path / "m.yaml", body))
+
+
+def test_guide_names_and_sources(tmp_path, monkeypatch):
+    monkeypatch.setattr(hfa, "repo_root", lambda: tmp_path / "clone")
+    assert hfa.guide_name("https://example.org/a/models.md?raw=1") == "models.md"
+    cat = bench_catalog(tmp_path)
+    assert hfa.guide_sources(cat) == [
+        tmp_path / "docs" / "guide.md", tmp_path / "clone" / "docs" / "guide.md",
+        *hfa.repo_raw_urls("docs/guide.md")]
+    assert hfa.repo_raw_urls("docs/guide.md")[1] == (
+        "https://raw.githubusercontent.com/IpastorSan/hfarchive/main/docs/guide.md")
+    # nothing local: the first GitHub URL is what --list reports
+    assert hfa.guide_source(cat) == hfa.repo_raw_urls("docs/guide.md")[0]
+    # paths that leave the config's directory are not looked up in the repo
+    cat.guide = "../guide.md"
+    assert hfa.guide_sources(cat) == [(tmp_path / ".." / "guide.md")]
+    cat.guide = "https://example.org/g.md"
+    assert hfa.guide_sources(cat) == ["https://example.org/g.md"]
+
+
+def test_usage_md_is_written_for_benchmarks_alone(tmp_path):
+    cat = bench_catalog(tmp_path)
+    extras = hfa.write_usage_files(cat.models, tmp_path, cat, {"coder": "c" * 40})
+    assert set(extras) == {"coder"}
+    assert extras["coder"]["workflows"] == []
+    usage = (tmp_path / "llm" / "org" / "coder-GGUF" / "USAGE.md").read_text()
+    assert "### Benchmarks" in usage
+    assert hfa.BENCHMARK_CAVEAT in usage
+    assert ("| SWE-bench Verified | 70.6 | <https://example.org/card> | 2026-11-13 | "
+            "self-reported, OpenHands harness |") in usage
+    assert "| Arena | 1156 Elo | <https://example.org/arena> | - | - |" in usage
+
+
+def test_usage_md_has_benchmarks_next_to_usage(tmp_path, monkeypatch):
+    body = USAGE_CONFIG.replace(
+        "  - id: plain\n",
+        "    benchmarks:\n"
+        "      - {name: Arena, score: 1100 Elo, source: https://example.org/arena}\n"
+        "  - id: plain\n")
+    cat = hfa.load_catalog(write_config(tmp_path / "u.yaml", body))
+    monkeypatch.setattr(hfa, "fetch_url", fake_fetch_url({}))
+    hfa.write_usage_files([cat.by_id("flux")], tmp_path, cat, {})
+    usage = (tmp_path / "image" / "org" / "flux" / "USAGE.md").read_text()
+    assert usage.index("### Workflows") < usage.index("### Benchmarks")
+    assert "| Arena | 1100 Elo |" in usage and "euler, 20 steps" in usage
+
+
+def test_index_md_shows_headline_benchmarks_guide_and_config(tmp_path):
+    cat = bench_catalog(tmp_path)
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "docs" / "guide.md").write_text("# guide\n")
+    coder = cat.by_id("coder")
+    st = hfa.RepoStatus(model=coder, exists=True, commit="c" * 40, files=[("a.gguf", 1)])
+    hfa.manifest_append(tmp_path, [hfa.DownloadResult(coder, "downloaded", commit="c" * 40)],
+                        {"coder": st})
+    text = hfa.index_markdown(hfa.manifest_read(tmp_path))
+    assert "SWE-bench Verified 70.6; LiveCodeBench 81; Arena 1156 Elo |" in text
+    assert "GPQA Diamond" not in text, "only the first three are headlines"
+    assert "Selection guide" not in text and "config-latest" not in text
+
+    hfa.manifest_write(tmp_path, [hfa.archive_config(cat.path, tmp_path),
+                                  hfa.archive_guide(cat, tmp_path)])
+    text = hfa.write_index(tmp_path).read_text()
+    head = text.split("## Models")[0]
+    assert "- Selection guide: [guide.md](<guide.md>)" in head
+    assert "[config-latest.yaml](<_hfarchive/config-latest.yaml>)" in head
+    assert "[_hfarchive/configs/](<_hfarchive/configs/>)" in head
+
+
+def test_config_is_archived_with_a_dated_copy_and_a_latest(tmp_path):
+    cfg = write_config(tmp_path / "my-models.yaml", MINIMAL)
+    dest = tmp_path / "drive"
+    rec = hfa.archive_config(cfg, dest)
+    stamped, latest = rec["artifacts"]
+    assert re.fullmatch(r"_hfarchive/configs/my-models-\d{8}-\d{6}\.yaml", stamped["path"])
+    assert latest["path"] == "_hfarchive/config-latest.yaml"
+    for art in (stamped, latest):
+        assert (dest / art["path"]).read_text() == MINIMAL
+        assert art["sha256"] == hashlib.sha256(MINIMAL.encode()).hexdigest()
+    assert rec["source"] == str(cfg.resolve())
+
+
+def test_guide_is_copied_from_the_config_directory_first(tmp_path, monkeypatch):
+    clone = tmp_path / "clone"
+    (clone / "docs").mkdir(parents=True)
+    (clone / "docs" / "guide.md").write_text("from the clone\n")
+    monkeypatch.setattr(hfa, "repo_root", lambda: clone)
+    monkeypatch.setattr(hfa, "fetch_url", lambda *a, **k: pytest.fail("must not fetch"))
+    cat = bench_catalog(tmp_path)
+    dest = tmp_path / "drive"
+
+    # not next to the config: the clone's copy
+    rec = hfa.archive_guide(cat, dest)
+    assert rec["status"] == "downloaded" and rec["source"] == str(clone / "docs" / "guide.md")
+    assert (dest / "guide.md").read_text() == "from the clone\n"
+
+    # next to the config: that one wins
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "docs" / "guide.md").write_text("mine\n")
+    rec = hfa.archive_guide(cat, dest)
+    assert rec["source"] == str(tmp_path / "docs" / "guide.md")
+    assert (dest / "guide.md").read_text() == "mine\n"
+    assert rec["sha256"] == hashlib.sha256(b"mine\n").hexdigest() and rec["size"] == 5
+
+
+def test_guide_falls_back_to_github_then_reports_failure(tmp_path, monkeypatch):
+    monkeypatch.setattr(hfa, "repo_root", lambda: tmp_path / "standalone")
+    tag_url, main_url = hfa.repo_raw_urls("docs/guide.md")
+    monkeypatch.setattr(hfa, "fetch_url", fake_fetch_url({main_url: b"# from main\n"}))
+    cat = bench_catalog(tmp_path)
+    dest = tmp_path / "drive"
+    rec = hfa.archive_guide(cat, dest)
+    assert rec["status"] == "downloaded" and rec["source"] == main_url
+    assert (dest / "guide.md").read_bytes() == b"# from main\n"
+
+    monkeypatch.setattr(hfa, "fetch_url", fake_fetch_url({}))
+    rec = hfa.archive_guide(cat, dest)
+    assert rec["status"] == "failed"
+    assert tag_url in rec["message"] and main_url in rec["message"]
+    assert (dest / "guide.md").read_bytes() == b"# from main\n", "a failure keeps the old copy"
+
+    cat.guide = "https://example.org/x/remote.md"
+    monkeypatch.setattr(hfa, "fetch_url", fake_fetch_url({cat.guide: b"remote"}))
+    assert hfa.archive_guide(cat, dest)["path"] == "remote.md"
+    assert (dest / "remote.md").read_bytes() == b"remote"
+
+
+def test_init_from_a_clone_keeps_the_guide_resolvable(tmp_path, monkeypatch):
+    monkeypatch.setattr(hfa, "fetch_text", lambda url: pytest.fail("must not fetch"))
+    target = tmp_path / "work" / "models.yaml"
+    assert hfa.main(["--init", "--config", str(target)]) == 0
+    cat = hfa.load_catalog(target)
+    assert cat.guide == "docs/models-2026-11.md"
+    # nothing at ./docs: the clone's copy is used, unchanged config
+    assert hfa.guide_source(cat) == PROJECT_ROOT / "docs" / "models-2026-11.md"
+    dest = tmp_path / "drive"
+    rec = hfa.archive_guide(cat, dest)
+    assert rec["status"] == "downloaded"
+    assert (dest / "models-2026-11.md").read_bytes() == (
+        PROJECT_ROOT / "docs" / "models-2026-11.md").read_bytes()
+
+    # standalone script, no clone: GitHub at this version's tag, then main
+    monkeypatch.setattr(hfa, "repo_root", lambda: tmp_path / "standalone")
+    assert hfa.guide_source(cat) == hfa.repo_raw_urls("docs/models-2026-11.md")[0]
+
+
+def test_curated_selection_names_its_guide():
+    cat = hfa.load_catalog(CURATED)
+    assert cat.guide and (PROJECT_ROOT / cat.guide).is_file()
+
+
+def test_cli_list_and_dry_run_mention_the_guide_and_benchmarks(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(hfa, "repo_root", lambda: tmp_path / "standalone")
+    cfg = str(write_config(tmp_path / "b.yaml", BENCH_CONFIG))
+    assert hfa.main(["--config", cfg, "--list"]) == 0
+    out = capsys.readouterr().out
+    assert "BENCH" in out and re.search(r"coder\s.*\s4\s", out)
+    assert "guide: docs/guide.md -> <DEST>/guide.md (from https://raw.githubusercontent" in out
+
+    assert hfa.main(["--config", cfg, "--list", "--json"]) == 0
+    data = json.loads(capsys.readouterr().out)
+    assert data["guide"]["name"] == "guide.md"
+    assert data["models"][0]["benchmarks"][0]["name"] == "SWE-bench Verified"
+
+    cat = hfa.load_catalog(cfg)
+    monkeypatch.setattr(hfa, "probe_all", lambda models: [
+        hfa.RepoStatus(model=m, exists=True, commit="c" * 40, files=[("a", 1)]) for m in models])
+    assert hfa.main(["--config", cfg, "--dry-run", "--json"]) == 0
+    plan = json.loads(capsys.readouterr().out)
+    assert plan[0]["benchmarks"] == 4
+    assert plan[-1] == {"kind": "guide", **hfa.guide_json(cat)}
+    assert hfa.main(["--config", cfg, "--dry-run"]) == 0
+    captured = capsys.readouterr()
+    assert "BENCH" in captured.out
+    assert "guide: docs/guide.md" in captured.err
+
+
+def test_full_run_archives_config_and_guide_and_check_covers_them(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(hfa, "repo_root", lambda: tmp_path / "standalone")
+    dest = tmp_path / "drive"
+    dest.mkdir()
+    cfg = write_config(tmp_path / "b.yaml", BENCH_CONFIG)
+    (tmp_path / "docs").mkdir()
+    guide = tmp_path / "docs" / "guide.md"
+    guide.write_text("# guide v1\n")
+    coder = hfa.load_catalog(cfg).by_id("coder")
+    weights = os.urandom(1024)
+    st = hfa.RepoStatus(model=coder, exists=True, commit="c" * 40,
+                        files=[("a.gguf", len(weights))],
+                        hashes={"a.gguf": {"sha256": hashlib.sha256(weights).hexdigest()}})
+    monkeypatch.setattr(hfa, "probe_all", lambda models: [st])
+    monkeypatch.setattr(hfa, "resolve_hf_bin", lambda: "hf")
+
+    def fake_hf(cmd):
+        (Path(cmd[cmd.index("--local-dir") + 1]) / "a.gguf").write_bytes(weights)
+        return 0, ""
+
+    monkeypatch.setattr(hfa, "_run_hf", fake_hf)
+    monkeypatch.setattr(hfa, "fetch_url", fake_fetch_url({}))
+    args = ["--config", str(cfg), "--dest", str(dest), "--allow-home-dest",
+            "--min-free-gb", "0", "--only", "coder"]
+    assert hfa.main(args) == 0
+    assert (dest / "guide.md").read_text() == "# guide v1\n"
+    assert (dest / "_hfarchive" / "config-latest.yaml").read_text() == BENCH_CONFIG
+    assert len(list((dest / "_hfarchive" / "configs").glob("b-*.yaml"))) == 1
+    index = (dest / "INDEX.md").read_text()
+    assert "[guide.md](<guide.md>)" in index and "SWE-bench Verified 70.6" in index
+    assert "### Benchmarks" in (dest / "llm" / "org" / "coder-GGUF" / "USAGE.md").read_text()
+    assert check(dest) == 0
+
+    # a changed config next run: the old dated copy stays verifiable, latest follows
+    real_strftime = hfa.time.strftime
+    monkeypatch.setattr(hfa.time, "strftime", lambda fmt, *a: "20990101-000000"
+                        if fmt == "%Y%m%d-%H%M%S" else real_strftime(fmt, *a))
+    cfg.write_text(BENCH_CONFIG + "# edited\n")
+    assert hfa.main(args) == 0
+    assert len(list((dest / "_hfarchive" / "configs").glob("b-*.yaml"))) == 2
+    assert check(dest) == 0
+
+    # the guide cannot be found anywhere: partial run, everything else lands
+    guide.unlink()
+    assert hfa.main(args) == 1
+    assert (dest / "guide.md").read_text() == "# guide v1\n"
+    assert check(dest) == 0, "the last good guide is still checked"
+
+    capsys.readouterr()
+    flip_one_byte(dest / "guide.md")
+    flip_one_byte(dest / "_hfarchive" / "config-latest.yaml")
+    assert check(dest, "--fast") == 0
+    assert check(dest, "--json") == 1
+    labels = sorted(p["file"] for p in json.loads(capsys.readouterr().out)["problems"])
+    assert labels == ["config: _hfarchive/config-latest.yaml", "guide: guide.md"]
+    (dest / "_hfarchive" / "config-latest.yaml").unlink()
+    for old in (dest / "_hfarchive" / "configs").glob("b-*.yaml"):
+        old.unlink()
+    assert check(dest, "--fast", "--json") == 1
+    problems = json.loads(capsys.readouterr().out)["problems"]
+    assert sum(p["file"].startswith("config: _hfarchive/configs/") for p in problems) == 2
