@@ -103,6 +103,8 @@ Follow the schema in the README. Per entry:
 - `gated` and `license` from the API.
 - Tags: `core` or `extended`; a type (`llm`, `image`, `video`, `security`, `uncensored`, `decision`); one tier tag per tier it runs on.
 - `usage.runtime` matching a `runtimes[].id`, and `usage.notes` with the model card's recommended settings (LLMs: temperature, top_p, top_k, min_p, thinking toggles, context; image/video: sampler, scheduler, steps, guidance, resolution, frames/fps), offload flags for the small tier, and which component entries it needs. Mark anything not from a model card as "(estimate)".
+- `benchmarks` for every model with published numbers: 3–8 items (`name`, `score`, `source` URL, `date`, `note` for self-reported or the harness), the most relevant first since `INDEX.md` shows the first three. Coding benchmarks come first for LLMs. Use exactly the numbers in the models guide (step 7), and give components (encoders, VAEs, mmproj) none.
+- `guide:` at the top level, pointing at the selection's `docs/models-YYYY-MM.md`; it is copied to the drive on every run.
 - `usage.workflows` for every image and video model: ComfyUI workflow JSONs, preferably from `Comfy-Org/workflow_templates`, at a pinned commit URL. Check each URL returns valid JSON.
 
 Pin every runtime in `runtimes:` to a release tag (or a commit when there are no releases) found with `gh api`, and check that `release_assets` globs match real assets. Include every custom-node pack the workflows need.
