@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "local-model-backup"
+version = "1.0.0"
+description = "Mirror a curated set of open Hugging Face models onto external drives."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "huggingface_hub>=0.34",
+    "PyYAML>=6.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
+[project.scripts]
+lmb = "lmb.cli:main"
+
+[tool.setuptools]
+packages = ["lmb"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

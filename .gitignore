@@ -1,0 +1,24 @@
+# local venv
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+
+# run artefacts — logs and manifests are generated, never committed
+logs/
+manifests/
+*.log
+
+# secrets
+.env
+.env.*
+!.env.example
+
+# never let model weights near the repo
+*.safetensors
+*.gguf
+*.bin
+*.pth
+*.ckpt
+
+.pytest_cache/

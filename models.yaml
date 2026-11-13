@@ -1,0 +1,787 @@
+# local-model-backup — model catalog
+#
+# Every repo id below was verified against the Hugging Face Hub API.
+# `approx_bytes` is the size of the files that the include/exclude globs
+# actually match (not the whole repo). Refresh it any time with:
+#
+#     python -m lmb --refresh-sizes
+#
+# Fields per entry:
+#   id           stable local name, used by --only / --exclude / --enable
+#   hf_repo      canonical Hub repo id (exact casing)
+#   revision     optional git revision (branch, tag or commit); default: main
+#   include      optional glob list; if set, ONLY matching files are downloaded
+#   exclude      optional glob list, applied after include
+#   category     top-level folder on the destination drive
+#   tags         used by profiles
+#   license      as reported by the Hub
+#   gated        true if the repo needs accepted terms + an HF token
+#   approx_bytes matched bytes (generated; see --refresh-sizes)
+#   enabled      false = skipped unless a profile opts in, or --enable is used
+#   notes        why these globs, substitutions, hardware hints
+#
+# NOTE ON GLOBS: Hub patterns are fnmatch-style and `*` DOES cross `/`.
+# So `*.safetensors` also matches `transformer/x.safetensors`. To exclude a
+# single root-level file you must name it exactly.
+
+defaults:
+  min_free_gb: 50          # refuse to download with less headroom than this
+  large_repo_gb: 100       # entries at/above this need --allow-large
+  jobs: 2                  # repos downloaded in parallel
+  max_workers_per_repo: 8  # files in parallel within one repo
+
+profiles:
+  tweet:
+    description: >-
+      DEFAULT. Every model from Dustin Hollywood's tweet. Multiple terabytes:
+      the huge FP8/8-bit dumps stay enabled but are gated behind --allow-large.
+    any_tags: [tweet]
+
+  tweet-gguf:
+    description: Only the GGUF / local-friendly rows from the tweet.
+    all_tags: [tweet, gguf]
+
+  domestic-coding:
+    description: >-
+      Coding models that actually run on a domestic ATX box (16-32 GB VRAM
+      class), plus the tweet's coding GGUFs.
+    any_tags: [coding-small]
+    include_disabled: true
+
+  current-box:
+    description: >-
+      Fits Ignacio's current box today: RTX 2070 Super 8 GB VRAM + 128 GB DDR5.
+      MoE GGUFs are included because low active-parameter counts run well on CPU.
+    any_tags: [current-box]
+    include_disabled: true
+
+  all:
+    description: Everything marked enabled in this file.
+    all: true
+
+models:
+
+  # ---------------------------------------------------------------- text-llm
+  - id: kimi-k3
+    hf_repo: moonshotai/Kimi-K3
+    category: text-llm
+    tags: [tweet, text, huge]
+    license: other
+    gated: false
+    approx_bytes: 1560998988078
+    enabled: true
+    notes: >-
+      Tweet says ~2.8T params 8-bit / ~2.8 TB. The Hub repo is ~1.56 TB of
+      safetensors, which is the real number. Custom (Modified MIT) licence.
+
+  - id: deepseek-v4.1-flash
+    hf_repo: deepseek-ai/DeepSeek-V4.1-Flash
+    category: text-llm
+    tags: [tweet, text, huge]
+    license: mit
+    gated: false
+    approx_bytes: 510313353565
+    enabled: true
+    notes: 763B FP8. MIT licensed, so the most freely usable of the frontier dumps.
+
+  - id: glm-5.3
+    hf_repo: zai-org/GLM-5.3
+    category: text-llm
+    tags: [tweet, text, huge]
+    license: other
+    gated: false
+    approx_bytes: 755663689206
+    enabled: true
+    notes: 753B FP8.
+
+  - id: glm-5.3-flash
+    hf_repo: zai-org/GLM-5.3-Flash
+    category: text-llm
+    tags: [tweet, text, huge]
+    license: mit
+    gated: false
+    approx_bytes: 328366173469
+    enabled: true
+    notes: Smaller sibling of GLM-5.3, MIT licensed.
+
+  - id: qwen3.8-27b
+    hf_repo: Qwen/Qwen3.8-27B
+    category: text-llm
+    tags: [tweet, text]
+    license: apache-2.0
+    gated: false
+    approx_bytes: 55586114863
+    enabled: true
+    notes: 27.8B, bf16 weights. Apache-2.0.
+
+  - id: gemma-4-31b-it
+    hf_repo: google/gemma-4-31B-it
+    category: text-llm
+    tags: [tweet, text]
+    license: apache-2.0
+    gated: false
+    approx_bytes: 62578686256
+    enabled: true
+    notes: Tweet wrote "gemma-4-31b-it"; canonical casing is gemma-4-31B-it.
+
+  - id: gemma-4-26b-a4b-it
+    hf_repo: google/gemma-4-26B-A4B-it
+    category: text-llm
+    tags: [tweet, text]
+    license: apache-2.0
+    gated: false
+    approx_bytes: 51644340088
+    enabled: true
+    notes: MoE, ~4B active. Canonical casing is gemma-4-26B-A4B-it.
+
+  - id: gpt-oss-120b
+    hf_repo: openai/gpt-oss-120b
+    exclude:
+      - original/*
+      - metal/*
+    category: text-llm
+    tags: [tweet, text]
+    license: apache-2.0
+    gated: false
+    approx_bytes: 65276859410
+    enabled: true
+    notes: >-
+      The repo ships the same weights three times (HF safetensors, original/,
+      metal/) for 195.8 GB total. Excluding original/ and metal/ leaves the
+      ~65 GB the tweet quotes. Drop the excludes if you want all three formats.
+
+  # ----------------------------------------------------------- text-llm-gguf
+  - id: qwen3.8-27b-gguf
+    hf_repo: unsloth/Qwen3.8-27B-GGUF
+    include:
+      - "*UD-Q4_K_XL.gguf"
+      - mmproj-F16.gguf
+      - README.md
+      - config.json
+    category: text-llm-gguf
+    tags: [tweet, gguf, text]
+    license: apache-2.0
+    gated: false
+    approx_bytes: 18486796847
+    enabled: true
+    notes: >-
+      One quant only: the repo holds 27 quants (~450 GB). UD-Q4_K_XL is the
+      ~17 GB Q4 the tweet refers to. mmproj-F16 enables the vision tower.
+
+  - id: glm-5.3-flash-gguf
+    hf_repo: unsloth/GLM-5.3-Flash-GGUF
+    include:
+      - UD-IQ1_S/*
+      - mmproj-F16.gguf
+      - README.md
+    category: text-llm-gguf
+    tags: [tweet, gguf, text]
+    license: mit
+    gated: false
+    approx_bytes: 94215300540
+    enabled: true
+    notes: >-
+      Whole repo is ~3.5 TB across 12 quants. UD-IQ1_S (~93 GB) is the largest
+      quant that still fits in 128 GB of system RAM. Swap the include for
+      UD-Q2_K_XL/* (~109 GB) or UD-Q4_K_XL/* (~248 GB) on a bigger box.
+
+  - id: kimi-k3-gguf
+    hf_repo: unsloth/Kimi-K3-GGUF
+    include:
+      - UD-Q1_0/*
+      - mmproj-F16.gguf
+      - README.md
+    category: text-llm-gguf
+    tags: [tweet, gguf, text, huge]
+    license: other
+    gated: false
+    approx_bytes: 467272745693
+    enabled: true
+    notes: >-
+      Whole repo is ~8 TB. UD-Q1_0 (~466 GB) is the smallest quant available;
+      even that needs --allow-large and will not fit in RAM on a domestic box.
+
+  - id: gpt-oss-120b-gguf
+    hf_repo: unsloth/gpt-oss-120b-GGUF
+    include:
+      - Q4_K_M/*
+      - config.json
+      - template
+      - params
+      - README.md
+    category: text-llm-gguf
+    tags: [tweet, gguf, text]
+    license: apache-2.0
+    gated: false
+    approx_bytes: 62768741814
+    enabled: true
+    notes: >-
+      gpt-oss is natively MXFP4, so every quant lands near 63 GB; Q4_K_M is the
+      usual pick. The full repo is ~800 GB.
+
+  # ------------------------------------------------------------------ coding
+  - id: kimi-k2.7-code
+    hf_repo: moonshotai/Kimi-K2.7-Code
+    category: coding
+    tags: [tweet, coding, huge]
+    license: other
+    gated: false
+    approx_bytes: 595204984507
+    enabled: true
+    notes: ~595 GB of safetensors.
+
+  - id: qwen3-coder-30b-a3b
+    hf_repo: Qwen/Qwen3-Coder-30B-A3B-Instruct
+    category: coding
+    tags: [tweet, coding]
+    license: apache-2.0
+    gated: false
+    approx_bytes: 61079826794
+    enabled: true
+    notes: bf16 safetensors of the most-downloaded coding model on the Hub.
+
+  - id: qwen3-coder-30b-a3b-gguf
+    hf_repo: unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF
+    include:
+      - "*UD-Q4_K_XL.gguf"
+      - README.md
+    category: coding
+    tags: [tweet, gguf, coding, coding-small, current-box]
+    license: apache-2.0
+    gated: false
+    approx_bytes: 17665342845
+    enabled: true
+    notes: >-
+      12.8M downloads, the most-used coding model on the Hub. 30B MoE with only
+      ~3B active, so Q4 runs at usable speed on CPU + 8 GB VRAM offload.
+
+  - id: devstral-small-2-24b
+    hf_repo: mistralai/Devstral-Small-2-24B-Instruct-2512
+    category: coding
+    tags: [tweet, coding]
+    license: apache-2.0
+    gated: false
+    approx_bytes: 51620249351
+    enabled: true
+
+  # ------------------------------------------------------------------- small
+  - id: minicpm5-2b
+    hf_repo: openbmb/MiniCPM5-2B
+    category: small
+    tags: [tweet, small, current-box]
+    license: apache-2.0
+    gated: false
+    approx_bytes: 5043811638
+    enabled: true
+
+  - id: gemma-4-e4b-it
+    hf_repo: google/gemma-4-E4B-it
+    category: small
+    tags: [tweet, small, current-box]
+    license: apache-2.0
+    gated: false
+    approx_bytes: 16024823729
+    enabled: true
+    notes: Any-to-any (text, image, audio in; text out).
+
+  - id: ministral-3-3b-gguf
+    hf_repo: mistralai/Ministral-3-3B-Instruct-2512-GGUF
+    include:
+      - "*Q4_K_M.gguf"
+      - "*mmproj.gguf"
+      - README.md
+    category: small
+    tags: [tweet, gguf, small, current-box]
+    license: apache-2.0
+    gated: false
+    approx_bytes: 2988528030
+    enabled: true
+
+  # ------------------------------------------------------------------- image
+  - id: flux2-dev
+    hf_repo: black-forest-labs/FLUX.2-dev
+    exclude:
+      - flux2-dev.safetensors
+    category: image
+    tags: [tweet, image, gated, huge]
+    license: other
+    gated: true
+    approx_bytes: 113193778267
+    enabled: true
+    notes: >-
+      32B, gated (accept terms on the model page first). The repo ships both a
+      diffusers layout and a single-file ComfyUI checkpoint of the same weights;
+      we keep diffusers and drop the 64 GB duplicate. For ComfyUI instead,
+      exclude transformer/* and keep flux2-dev.safetensors + ae.safetensors.
+
+  - id: flux2-klein-9b
+    hf_repo: black-forest-labs/FLUX.2-klein-9B
+    exclude:
+      - flux-2-klein-9b.safetensors
+    category: image
+    tags: [tweet, image, gated]
+    license: other
+    gated: true
+    approx_bytes: 34731551627
+    enabled: true
+    notes: Same single-file/diffusers duplication as FLUX.2-dev.
+
+  - id: flux2-klein-4b
+    hf_repo: black-forest-labs/FLUX.2-klein-4B
+    exclude:
+      - flux-2-klein-4b.safetensors
+    category: image
+    tags: [tweet, image, current-box]
+    license: apache-2.0
+    gated: false
+    approx_bytes: 15988901735
+    enabled: true
+    notes: >-
+      Ungated and Apache-2.0 — the practical FLUX.2 to actually keep. Runs on
+      8 GB VRAM with text-encoder offload to system RAM.
+
+  - id: qwen-image-2512
+    hf_repo: Qwen/Qwen-Image-2512
+    category: image
+    tags: [tweet, image]
+    license: apache-2.0
+    gated: false
+    approx_bytes: 57704595735
+    enabled: true
+
+  - id: qwen-image-edit-2511
+    hf_repo: Qwen/Qwen-Image-Edit-2511
+    category: image
+    tags: [tweet, image]
+    license: apache-2.0
+    gated: false
+    approx_bytes: 57720463453
+    enabled: true
+
+  - id: qwen-image-layered
+    hf_repo: Qwen/Qwen-Image-Layered
+    category: image
+    tags: [tweet, image]
+    license: apache-2.0
+    gated: false
+    approx_bytes: 57720484610
+    enabled: true
+
+  # ------------------------------------------------------------------- video
+  - id: ltx-2.5
+    hf_repo: Lightricks/LTX-2.5
+    exclude:
+      - "*comfy-int8-convrot*"
+      - "*dev-transformer*"
+    category: video
+    tags: [tweet, video, gated]
+    license: other
+    gated: true
+    approx_bytes: 100454473769
+    enabled: true
+    notes: >-
+      Gated. Full repo is ~201 GB of overlapping variants. Default drops the
+      `dev` transformers and the comfy-int8 conversions, keeping the distilled
+      bf16 and nvfp4 transformers + bf16 text encoder + VAEs + upscalers + LoRA.
+      Drop the excludes to take the dev and int8 variants too.
+
+  - id: minimax-h3
+    hf_repo: MiniMaxAI/MiniMax-H3
+    exclude:
+      - FL2VA/*
+      - Ref2VA/*
+    category: video
+    tags: [tweet, video, huge]
+    license: other
+    gated: false
+    approx_bytes: 210372384242
+    enabled: true
+    notes: >-
+      Full repo is ~499 GB. FL2VA/ and Ref2VA/ are 144 GB each of task-specific
+      variants; excluding them keeps the core text/image-to-video stack.
+
+  - id: wan2.2-animate-14b
+    hf_repo: Wan-AI/Wan2.2-Animate-14B
+    category: video
+    tags: [tweet, video]
+    license: apache-2.0
+    gated: false
+    approx_bytes: 72376533926
+    enabled: true
+    notes: 444 files, but 400 of them are small preprocessing checkpoints.
+
+  - id: wan2.2-comfyui-repackaged
+    hf_repo: Comfy-Org/Wan_2.2_ComfyUI_Repackaged
+    include:
+      - "split_files/diffusion_models/wan2.2_t2v_*_fp8_scaled.safetensors"
+      - "split_files/diffusion_models/wan2.2_i2v_*_fp8_scaled.safetensors"
+      - split_files/diffusion_models/wan2.2_ti2v_5B_fp16.safetensors
+      - split_files/diffusion_models/wan2.2_s2v_14B_fp8_scaled.safetensors
+      - split_files/diffusion_models/wan2.2_animate_14B_int8_convrot.safetensors
+      - split_files/text_encoders/umt5_xxl_fp8_e4m3fn_scaled.safetensors
+      - split_files/vae/*
+      - split_files/loras/*
+      - split_files/audio_encoders/*
+      - README.md
+    category: video
+    tags: [tweet, video, huge]
+    license: apache-2.0
+    gated: false
+    approx_bytes: 117735506517
+    enabled: true
+    notes: >-
+      Full repo is ~729 GB: every Wan 2.2 variant in bf16/fp16 AND fp8. Default
+      keeps one quantised copy of the core t2v/i2v/ti2v/s2v/animate models plus
+      the shared text encoder, VAEs and LoRAs. Add "split_files/*" to take all.
+
+  - id: longcat-video-avatar-1.5
+    hf_repo: meituan-longcat/LongCat-Video-Avatar-1.5
+    category: video
+    tags: [tweet, video]
+    license: mit
+    gated: false
+    approx_bytes: 74890057285
+    enabled: true
+    notes: Bundles its own whisper-large-v3 (~25 GB) and an int8 base model.
+
+  - id: krea-realtime-video
+    hf_repo: krea/krea-realtime-video
+    exclude:
+      - causal_ode_init/*
+      - krea-realtime-video-14b.safetensors
+    category: video
+    tags: [tweet, video]
+    license: apache-2.0
+    gated: false
+    approx_bytes: 28639354022
+    enabled: true
+    notes: >-
+      Excludes the 57 GB training-init checkpoint and the root single-file
+      duplicate of transformer/, leaving the ~29 GB diffusers model.
+
+  # --------------------------------------------------------------------- asr
+  - id: voxtral-mini-4b-realtime
+    hf_repo: mistralai/Voxtral-Mini-4B-Realtime-2602
+    category: asr
+    tags: [tweet, asr]
+    license: apache-2.0
+    gated: false
+    approx_bytes: 17733839939
+    enabled: true
+
+  - id: nemotron-speech-streaming-en
+    hf_repo: nvidia/nemotron-speech-streaming-en-0.6b
+    category: asr
+    tags: [tweet, asr, current-box]
+    license: other
+    gated: false
+    approx_bytes: 5646634153
+    enabled: true
+    notes: Ships .nemo, .safetensors and .gguf — all three kept, total is small.
+
+  - id: whisper-large-v3-turbo
+    hf_repo: openai/whisper-large-v3-turbo
+    category: asr
+    tags: [tweet, asr, current-box]
+    license: mit
+    gated: false
+    approx_bytes: 1622466054
+    enabled: true
+
+  # --------------------------------------------------------------------- tts
+  - id: tencent-auk
+    hf_repo: tencent/AuK
+    category: tts
+    tags: [tweet, tts, current-box]
+    license: mit
+    gated: false
+    approx_bytes: 6762657404
+    enabled: true
+    notes: Tweet wrote "tencent/Auk"; canonical casing is tencent/AuK.
+
+  - id: voxtral-4b-tts
+    hf_repo: mistralai/Voxtral-4B-TTS-2603
+    category: tts
+    tags: [tweet, tts, current-box]
+    license: cc-by-nc-4.0
+    gated: false
+    approx_bytes: 8037630658
+    enabled: true
+    notes: Non-commercial licence.
+
+  - id: audio8-tts-preview
+    hf_repo: Edge0/Audio8-TTS-Preview-0.6b
+    category: tts
+    tags: [tweet, tts, current-box]
+    license: apache-2.0
+    gated: false
+    approx_bytes: 2565537696
+    enabled: true
+    notes: Verified — Edge0/Audio8-TTS-Preview-0.6b exists exactly as the tweet wrote it.
+
+  # ------------------------------------------------------------------- music
+  - id: yue2-3b
+    hf_repo: m-a-p/YuE2-3B
+    category: music
+    tags: [tweet, music, current-box]
+    license: cc-by-nc-4.0
+    gated: false
+    approx_bytes: 7295775046
+    enabled: true
+
+  - id: yue2-3b-gguf
+    hf_repo: audio-cpp/Yue2-3B-GGUF
+    exclude:
+      - "*bf16*"
+      - "*-f32.gguf"
+    category: music
+    tags: [tweet, gguf, music, current-box]
+    license: cc-by-nc-4.0
+    gated: false
+    approx_bytes: 7401767256
+    enabled: true
+    notes: Verified. Keeps q4_0 + q8_0 + the f16 VAE, drops bf16/f32 duplicates.
+
+  - id: minimax-music3-gguf
+    hf_repo: audio-cpp/MiniMax-Music3-GGUF
+    exclude:
+      - "*bf16*"
+    category: music
+    tags: [tweet, gguf, music, current-box]
+    license: other
+    gated: false
+    approx_bytes: 29928924215
+    enabled: true
+    notes: >-
+      Verified. Multi-part model (language_model + transformer + rvq decoder +
+      vocoder + condition encoder); bf16 parts dropped, q4_k/q8_0 kept.
+
+  - id: stable-audio-3-medium
+    hf_repo: stabilityai/stable-audio-3-medium
+    category: music
+    tags: [tweet, music, gated, current-box]
+    license: other
+    gated: true
+    approx_bytes: 10445316196
+    enabled: true
+    notes: Gated (auto-approved once you accept the terms).
+
+  - id: sam-audio-large
+    hf_repo: facebook/sam-audio-large
+    category: music
+    tags: [tweet, music, gated]
+    license: other
+    gated: true
+    approx_bytes: 14861374607
+    enabled: true
+    notes: Gated with manual approval — request access well before Saturday.
+
+  # --------------------------------------------------------------------- ocr
+  - id: unlimited-ocr
+    hf_repo: baidu/Unlimited-OCR
+    category: ocr
+    tags: [tweet, ocr, current-box]
+    license: mit
+    gated: false
+    approx_bytes: 6778369652
+    enabled: true
+
+  - id: glm-ocr
+    hf_repo: zai-org/GLM-OCR
+    category: ocr
+    tags: [tweet, ocr, current-box]
+    license: mit
+    gated: false
+    approx_bytes: 2657442283
+    enabled: true
+
+  - id: deepseek-ocr-2
+    hf_repo: deepseek-ai/DeepSeek-OCR-2
+    category: ocr
+    tags: [tweet, ocr, current-box]
+    license: apache-2.0
+    gated: false
+    approx_bytes: 6789306112
+    enabled: true
+
+  - id: chandra-ocr-2
+    hf_repo: datalab-to/chandra-ocr-2
+    category: ocr
+    tags: [tweet, ocr, current-box]
+    license: openrail
+    gated: false
+    approx_bytes: 10611946028
+    enabled: true
+
+  # -------------------------------------------------------------- embeddings
+  - id: jina-embeddings-v5-omni-small
+    hf_repo: jinaai/jina-embeddings-v5-omni-small
+    category: embeddings
+    tags: [tweet, embeddings, current-box]
+    license: cc-by-nc-4.0
+    gated: false
+    approx_bytes: 3427219509
+    enabled: true
+
+  - id: qwen3-embedding-8b
+    hf_repo: Qwen/Qwen3-Embedding-8B
+    category: embeddings
+    tags: [tweet, embeddings, current-box]
+    license: apache-2.0
+    gated: false
+    approx_bytes: 15150575778
+    enabled: true
+
+  - id: qwen3-embedding-0.6b
+    hf_repo: Qwen/Qwen3-Embedding-0.6B
+    category: embeddings
+    tags: [tweet, embeddings, current-box]
+    license: apache-2.0
+    gated: false
+    approx_bytes: 1207489041
+    enabled: true
+
+  - id: embeddinggemma-300m
+    hf_repo: google/embeddinggemma-300m
+    category: embeddings
+    tags: [tweet, embeddings, gated, current-box]
+    license: gemma
+    gated: true
+    approx_bytes: 1269643611
+    enabled: true
+    notes: Gated with manual approval (standard Gemma terms).
+
+  - id: qwen3-reranker-8b
+    hf_repo: Qwen/Qwen3-Reranker-8B
+    category: embeddings
+    tags: [tweet, embeddings, current-box]
+    license: apache-2.0
+    gated: false
+    approx_bytes: 16393071729
+    enabled: true
+
+  - id: bge-reranker-v2-m3
+    hf_repo: BAAI/bge-reranker-v2-m3
+    category: embeddings
+    tags: [tweet, embeddings, current-box]
+    license: apache-2.0
+    gated: false
+    approx_bytes: 2293567489
+    enabled: true
+
+  # ------------------------------------------------- extra: small coding GGUF
+  # Not on the tweet. Disabled by default; pulled in by the `domestic-coding`
+  # and `current-box` profiles, or with --enable <id>.
+
+  - id: deepseek-r1-distill-qwen-14b-gguf
+    hf_repo: unsloth/DeepSeek-R1-Distill-Qwen-14B-GGUF
+    include:
+      - "*Q4_K_M.gguf"
+      - README.md
+    category: coding-small
+    tags: [coding-small, gguf, coding, current-box]
+    license: apache-2.0
+    gated: false
+    approx_bytes: 8988134723
+    enabled: false
+    notes: ~9 GB at Q4_K_M. Partial offload on 8 GB VRAM, fully in RAM otherwise.
+
+  - id: deepseek-r1-distill-qwen-32b-gguf
+    hf_repo: unsloth/DeepSeek-R1-Distill-Qwen-32B-GGUF
+    include:
+      - "*Q4_K_M.gguf"
+      - README.md
+    category: coding-small
+    tags: [coding-small, gguf, coding]
+    license: apache-2.0
+    gated: false
+    approx_bytes: 19851360323
+    enabled: false
+    notes: ~20 GB at Q4_K_M — comfortable on a 24-32 GB VRAM card.
+
+  - id: deepseek-coder-v2-lite-gguf
+    hf_repo: bartowski/DeepSeek-Coder-V2-Lite-Instruct-GGUF
+    include:
+      - "*Q4_K_M.gguf"
+      - README.md
+    category: coding-small
+    tags: [coding-small, gguf, coding, current-box]
+    license: other
+    gated: false
+    approx_bytes: 10364425883
+    enabled: false
+    notes: >-
+      SUBSTITUTION: unsloth/DeepSeek-Coder-V2-Lite-Instruct-GGUF does not exist
+      on the Hub. bartowski's is the highest-download GGUF of this family
+      (~449k). 16B MoE with ~2.4B active — very fast on CPU.
+
+  - id: deepseek-coder-v2-lite
+    hf_repo: deepseek-ai/DeepSeek-Coder-V2-Lite-Instruct
+    category: coding-small
+    tags: [coding-small, coding]
+    license: other
+    gated: false
+    approx_bytes: 31418823360
+    enabled: false
+    notes: Optional safetensors original of the above (~31 GB).
+
+  - id: qwen2.5-coder-32b-gguf
+    hf_repo: Qwen/Qwen2.5-Coder-32B-Instruct-GGUF
+    include:
+      - "*-q4_k_m.gguf"
+      - README.md
+    category: coding-small
+    tags: [coding-small, gguf, coding]
+    license: apache-2.0
+    gated: false
+    approx_bytes: 19851341854
+    enabled: false
+    notes: >-
+      Official Qwen GGUFs use lowercase quant names and ship both a single file
+      and a split copy; `*-q4_k_m.gguf` matches only the single ~20 GB file.
+
+  - id: qwen2.5-coder-14b-gguf
+    hf_repo: bartowski/Qwen2.5-Coder-14B-Instruct-GGUF
+    include:
+      - "*-Q4_K_M.gguf"
+      - README.md
+    category: coding-small
+    tags: [coding-small, gguf, coding, current-box]
+    license: apache-2.0
+    gated: false
+    approx_bytes: 8988122579
+    enabled: false
+    notes: >-
+      Qwen publishes no official 14B GGUF, so this uses bartowski's (~9 GB at
+      Q4_K_M).
+
+  - id: qwen2.5-coder-7b-gguf
+    hf_repo: Qwen/Qwen2.5-Coder-7B-Instruct-GGUF
+    include:
+      - "*-q4_k_m.gguf"
+      - README.md
+    category: coding-small
+    tags: [coding-small, gguf, coding, current-box]
+    license: apache-2.0
+    gated: false
+    approx_bytes: 4683079206
+    enabled: false
+    notes: >-
+      ~4.7 GB — fits entirely in the current 8 GB RTX 2070 Super with room for
+      context. Official Qwen repo.
+
+  - id: deepseek-coder-6.7b-gguf
+    hf_repo: TheBloke/deepseek-coder-6.7B-instruct-GGUF
+    include:
+      - "*Q4_K_M.gguf"
+      - README.md
+    category: coding-small
+    tags: [coding-small, gguf, coding, current-box]
+    license: other
+    gated: false
+    approx_bytes: 4083037226
+    enabled: false
+    notes: >-
+      SUBSTITUTION: bartowski/deepseek-coder-6.7b-instruct-GGUF does not exist.
+      TheBloke's is the highest-download GGUF of this model (~42k). ~4.1 GB at
+      Q4_K_M, the DeepSeek-family option that fits the current 8 GB card.
