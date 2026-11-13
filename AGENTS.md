@@ -20,6 +20,29 @@ uv run --no-project --with pytest --with huggingface_hub --with pyyaml pytest -q
 
 Always pass `--no-project` to `uv run`; without it uv finds a `pyproject.toml` in a parent directory and rebuilds that project's `.venv`. Never run a real download in a test or a check.
 
+## When a user asks you to research models
+
+The job runs from research to a verified archive on their drive. Do it in this order and don't skip the decision step.
+
+1. **Ask only what you can't find out.** Their GPU, VRAM and system RAM; this you can usually read yourself (`nvidia-smi`, `free -h`). Ask what they will use the models for; most users of this tool are programmers, so default to coding first. Ask the target drive and its free space (`df -h <dest>`), and whether size limits or licences matter to them.
+2. **Research** as in "Refreshing the curated selection" below: candidates per category, every repo verified on the Hub, the quant chosen per tier, model cards read, benchmarks gathered with sources, and coding benchmarks first.
+3. **Present a decision brief** before writing any config or downloading anything. It must let the user decide without opening another page:
+   - their hardware tier and what it means for them;
+   - per category, a table with each model: params (total / active), the tier it runs on, quant and size, what it is best at, 3–5 benchmarks with sources (coding benchmarks for the coding and general tables), licence and gating, and the speed estimate;
+   - how the best candidates compare with the current closed frontier, on coding especially;
+   - a proposed `core` and `extended` set with size totals checked against their free space, and what to drop first if it does not fit;
+   - anything unverified, self-reported or surprising (renamed repos, territory-restricted licences, runtimes that only build on new GPUs).
+
+   Put a long brief in a file (`docs/models-YYYY-MM.md` when refreshing the default, or a file in the user's working directory otherwise) and summarise it in chat.
+4. **Wait for the user's choice.** They add, drop or swap models. Don't download before they say so: a run is hundreds of GB and hours of transfer.
+5. **Write the config** for exactly what they chose, with `usage` notes, workflows and the runtimes it needs (step 5 below). Check it with `--verify-only`, then show the `--dry-run` to the user: the totals, what is over `large_repo_gb`, and the free space after the run.
+6. **Download everything** they approved:
+   ```sh
+   ./hfarchive --config <their config> --dest <drive> --profile <profile> [--allow-large]
+   ```
+   Run it in the background, as it takes hours. If it stops (network, rate limit), run the same command again; downloads resume.
+7. **Verify and report.** Run `./hfarchive --check --dest <drive>`. Report what was archived, the total size, any entry that failed and why, and point the user at `<drive>/INDEX.md`. Suggest a second copy of the core set and a periodic `--verify-only` / `--check`.
+
 ## Refreshing the curated selection
 
 The default selection goes stale in months. To build a new one (`examples/archive-YYYY-MM.yaml`), research it the way the current one was built. Work from evidence on huggingface.co, not from memory: model names, quant names and sizes change too fast.
