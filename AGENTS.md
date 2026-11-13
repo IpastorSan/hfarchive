@@ -1,0 +1,99 @@
+# AGENTS.md
+
+Instructions for coding agents working in this repo. Humans: see README.md.
+
+## The repo
+
+- `hfarchive`: the whole tool, one executable Python file run by `uv run --script` (PEP 723 header). There is no package, no `pyproject.toml`; keep it that way.
+- `examples/archive-2026-11.yaml`: the curated default selection that `--init` writes.
+- `examples/tweet-2026-09.yaml`: an older list, kept as an example.
+- `tests/test_hfarchive.py`: loads the script with `SourceFileLoader`.
+
+Checks before calling work done:
+
+```sh
+uv run --no-project --with pytest --with huggingface_hub --with pyyaml pytest -q
+./hfarchive --help
+./hfarchive --config examples/archive-2026-11.yaml --list
+./hfarchive --config examples/archive-2026-11.yaml --profile all --verify-only   # hits the Hub, no downloads
+```
+
+Always pass `--no-project` to `uv run`; without it uv finds a `pyproject.toml` in a parent directory and rebuilds that project's `.venv`. Never run a real download in a test or a check.
+
+## Refreshing the curated selection
+
+The default selection goes stale in months. To build a new one (`examples/archive-YYYY-MM.yaml`), research it the way the current one was built. Work from evidence on huggingface.co, not from memory: model names, quant names and sizes change too fast.
+
+### 1. Fix the hardware tiers first
+
+Every recommendation is "runs on tier X". The current tiers:
+
+| Tag | GPU | System RAM | What fits |
+|---|---|---|---|
+| `tier-8gb` | 8 GB VRAM, possibly pre-Ampere (no bf16/FP8) | ~128 GB | Small dense models fully on GPU; large MoE models with experts offloaded to RAM (`--n-cpu-moe`); image models as GGUF with text encoders in RAM |
+| `tier-16gb` | 16 GB | 64–128 GB | Dense ~27–31B at Q3–Q4; mid image/video models at Q4–Q8 |
+| `tier-24gb` | 24 GB | 128 GB | Dense ~27–31B at Q4–Q5; large image models (FLUX.2 dev class) at Q4 |
+
+Rules of thumb used for the fit:
+- LLM memory needed ≈ GGUF size + 10–20 % for KV cache and context. Dense models are fast only when the whole file fits in VRAM.
+- MoE speed scales with **active** parameters, so a 100B+ MoE with ~3–6B active is usable from system RAM. A dense 27B spilling into RAM is not.
+- Image/video VRAM need ≈ diffusion-model file + 1–2 GB; text encoders can sit in RAM.
+- FP8 needs Ada/Blackwell; NVFP4 needs Blackwell. On older cards prefer GGUF or int8.
+
+### 2. Gather candidates
+
+Cover, at their latest generation:
+- **General LLMs** from every major open-weight family (at the time of writing: Qwen, Gemma, DeepSeek, GLM, Kimi, ERNIE, LFM, MiniMax, gpt-oss, Nemotron, Mistral, Nex) plus any newcomer that tops a tier.
+- **Coding/agent** models.
+- **Security** models (Foundation-Sec and successors), and note honestly whether a general model beats them.
+- **Abliterated/uncensored** variants of the best general models. Prefer Heretic-style (lower KL divergence) over older manual abliteration; always keep the original too.
+- **Decision models** (option-scoring models such as Clef; check whether a model is actually open-weight or hosted-only).
+- **Image** generation and editing, **video**, and abliterated text encoders for them.
+
+Sources, in order of trust: the official org's Hub page and model card; unsloth.ai docs and changelog; the ggml-org, unsloth, bartowski, city96, QuantStack and Comfy-Org repos; ComfyUI's blog and workflow templates; then press and blogs. Treat benchmark claims in announcements as the author's own until someone else reproduces them.
+
+### 3. Verify every repo on the Hub
+
+For each candidate, use the API, not search snippets:
+
+```sh
+curl -s "https://huggingface.co/api/models?search=<name>&sort=downloads&limit=20"          # find repos
+curl -s "https://huggingface.co/api/models/<org>/<repo>?blobs=true"                        # files, sizes, gated, license, base_model
+curl -s "https://huggingface.co/api/models/<org>/<repo>/tree/main?recursive=true"          # exact paths (sharded quants live in folders)
+```
+
+Record: the repo exists, `gated`, the license, the base model, the exact file names of the quant you want and their summed size. A redirect means the repo was renamed: use the new id. If a repo is gone, find the closest real replacement and say so in `notes`; never invent a repo or a file name.
+
+### 4. Choose the quant per tier
+
+- Prefer GGUF from unsloth (UD dynamic quants), ggml-org (official) or bartowski.
+- Typical picks: Q4_K_M / UD-Q4_K_XL as the default; IQ4_XS or Q3_K_XL to squeeze into a tier; IQ1_S/IQ2 only for huge MoE models you otherwise could not run; Q8_0 as the "keep for a bigger card" copy of small models.
+- Include `mmproj` files for vision LLMs.
+- Image/video models need their components: text encoder(s), VAE, upscaler. Make each component its own entry and share it between models instead of duplicating it.
+- A model whose smallest quant does not fit any tier is either skipped or kept as archive-only (no tier tag, `extended`, a note saying what hardware it needs).
+
+### 5. Write the entries
+
+Follow the schema in the README. Per entry:
+- `include` globs pin only the chosen files. Hub globs are fnmatch-style and `*` crosses `/`. Unsloth repos keep stub first-shard copies under `Shard_Rewrite/`, so pin sharded quants by folder (`UD-IQ1_S/*`), never by a bare `*UD-IQ1_S*`.
+- `approx_bytes` is the measured size of the matched files (`--refresh-sizes` rewrites it).
+- `gated` and `license` from the API.
+- Tags: `core` or `extended`; a type (`llm`, `image`, `video`, `security`, `uncensored`, `decision`); one tier tag per tier it runs on.
+- `usage.runtime` matching a `runtimes[].id`, and `usage.notes` with the model card's recommended settings (LLMs: temperature, top_p, top_k, min_p, thinking toggles, context; image/video: sampler, scheduler, steps, guidance, resolution, frames/fps), offload flags for the small tier, and which component entries it needs. Mark anything not from a model card as "(estimate)".
+- `usage.workflows` for every image and video model: ComfyUI workflow JSONs, preferably from `Comfy-Org/workflow_templates`, at a pinned commit URL. Check each URL returns valid JSON.
+
+Pin every runtime in `runtimes:` to a release tag (or a commit when there are no releases) found with `gh api`, and check that `release_assets` globs match real assets. Include every custom-node pack the workflows need.
+
+### 6. Check and size it
+
+```sh
+./hfarchive --config examples/archive-YYYY-MM.yaml --profile all --verify-only
+./hfarchive --config examples/archive-YYYY-MM.yaml --profile core --list
+./hfarchive --config examples/archive-YYYY-MM.yaml --profile all --list
+```
+
+All repos must report OK. Report totals per profile and keep `core` to a size that fits one common drive with room for a second copy (the 2026-11 set: ~880 GB core, ~2.2 TB all). Then point `--init`'s curated-file constant at the new file.
+
+## Writing style
+
+The README and example comments are public. Plain, concrete sentences; no marketing; no personal names or machines; no text addressed to an AI outside this file.
