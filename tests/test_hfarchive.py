@@ -1891,7 +1891,8 @@ def test_utf8_stdio_replaces_a_legacy_code_page():
     finally:
         sys.stdout, sys.stderr = saved
     assert out.encoding == err.encoding == "utf-8"
-    assert out.buffer.getvalue() == "τ²-bench ≈ 1\n".encode()
+    # Console output keeps the platform's newline (CRLF on Windows); only the encoding changes.
+    assert out.buffer.getvalue() == f"τ²-bench ≈ 1{os.linesep}".encode()
 
 
 def test_long_path_warning_only_on_windows_without_long_paths(monkeypatch):
