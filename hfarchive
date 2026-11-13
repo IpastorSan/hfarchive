@@ -7,13 +7,18 @@
 
 Transfers are delegated to the official `hf download` CLI (resume, integrity
 checks, Xet). This script adds the layer around it: the config, profiles,
-size accounting, safety guards and an append-only manifest on the drive.
+size accounting, safety guards, the runtimes and workflows needed to run the
+models later, an append-only manifest with checksums, and `--check`.
 """
 
 from __future__ import annotations
 
 import argparse
 import concurrent.futures as cf
+import contextlib
+import fnmatch
+import functools
+import hashlib
 import json
 import logging
 import os
@@ -24,7 +29,9 @@ import subprocess
 import sys
 import threading
 import time
-from dataclasses import dataclass, field
+import urllib.error
+import urllib.request
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 import yaml
@@ -36,13 +43,23 @@ from huggingface_hub.utils import (
     filter_repo_objects,
 )
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 
 DEFAULT_CONFIG = "models.yaml"
+# The curated selection `--init` writes and a clone falls back to.
+CURATED_CONFIG = "archive-2026-11.yaml"
+CURATED_URL = ("https://raw.githubusercontent.com/IpastorSan/hfarchive/{ref}/examples/"
+               + CURATED_CONFIG)
 DEST_ENV = "HFARCHIVE_DEST"
 HF_BIN_ENV = "HFARCHIVE_HF_BIN"
 BOOKKEEPING_DIR = "_hfarchive"
 MANIFEST_NAME = "manifest.jsonl"
+RUNTIMES_DIR = "_runtimes"
+INDEX_NAME = "INDEX.md"
+USAGE_NAME = "USAGE.md"
+WORKFLOWS_DIR = "_workflows"
+USER_AGENT = f"hfarchive/{__version__}"
+GOOD_STATUSES = ("downloaded", "up-to-date")
 
 DEFAULTS = {
     "min_free_gb": 50,
@@ -59,6 +76,93 @@ class CatalogError(Exception):
     """Raised when the YAML config is malformed or a selection is impossible."""
 
 
+# Runtime ids and workflow names become file names on the drive.
+SAFE_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+-]*$")
+
+
+def _check_keys(what: str, body: dict, allowed: set[str], required: set[str]) -> None:
+    if not isinstance(body, dict):
+        raise CatalogError(f"{what} must be a mapping")
+    unknown = set(body) - allowed
+    if unknown:
+        raise CatalogError(f"{what} has unknown keys: {sorted(unknown)}")
+    missing = required - set(body)
+    if missing:
+        raise CatalogError(f"{what} is missing {sorted(missing)}")
+
+
+@dataclass
+class Workflow:
+    """A file fetched by URL into <model dir>/_workflows/<name>."""
+    name: str
+    url: str
+
+
+@dataclass
+class Usage:
+    runtime: str | None = None
+    notes: str | None = None
+    workflows: list[Workflow] = field(default_factory=list)
+
+    @classmethod
+    def parse(cls, model_id: str, body: dict) -> Usage:
+        _check_keys(f"model {model_id!r} usage", body, {"runtime", "notes", "workflows"}, set())
+        workflows: list[Workflow] = []
+        for wf in body.get("workflows") or []:
+            _check_keys(f"model {model_id!r} workflow", wf, {"name", "url"}, {"name", "url"})
+            if not SAFE_NAME.match(str(wf["name"])):
+                raise CatalogError(f"model {model_id!r}: workflow name {wf['name']!r} must be "
+                                   "a plain file name")
+            workflows.append(Workflow(name=str(wf["name"]), url=str(wf["url"])))
+        names = [w.name for w in workflows]
+        if len(names) != len(set(names)):
+            raise CatalogError(f"model {model_id!r}: duplicate workflow names")
+        runtime = body.get("runtime")
+        return cls(runtime=str(runtime) if runtime is not None else None,
+                   notes=body.get("notes"), workflows=workflows)
+
+
+_GITHUB_REPO = re.compile(r"github\.com[:/]([^/]+)/([^/]+?)(?:\.git)?/?$")
+
+
+@dataclass
+class Runtime:
+    """A program needed to run models, archived as git history plus builds."""
+    id: str
+    git: str
+    ref: str = "HEAD"
+    release_assets: list[str] = field(default_factory=list)
+    tags: list[str] = field(default_factory=list)
+    enabled: bool = True
+    notes: str | None = None
+
+    @classmethod
+    def parse(cls, body: dict) -> Runtime:
+        what = f"runtime {body.get('id')!r}" if isinstance(body, dict) else "runtime"
+        _check_keys(what, body, set(cls.__dataclass_fields__), {"id", "git"})
+        rt = cls(**body)
+        rt.id, rt.ref = str(rt.id), str(rt.ref)
+        if not SAFE_NAME.match(rt.id):
+            raise CatalogError(f"runtime id {rt.id!r} must be a plain file name")
+        if rt.release_assets and not rt.github_repo:
+            raise CatalogError(f"runtime {rt.id!r}: release_assets needs a github.com git URL")
+        if rt.release_assets and rt.ref == "HEAD":
+            raise CatalogError(f"runtime {rt.id!r}: release_assets needs `ref` to name a tag")
+        return rt
+
+    @property
+    def github_repo(self) -> tuple[str, str] | None:
+        m = _GITHUB_REPO.search(self.git)
+        return (m.group(1), m.group(2)) if m else None
+
+    @property
+    def safe_ref(self) -> str:
+        return re.sub(r"[^A-Za-z0-9._+-]", "_", self.ref)
+
+    def dest_dir(self, dest: Path) -> Path:
+        return Path(dest) / RUNTIMES_DIR / self.id
+
+
 @dataclass
 class Model:
     id: str
@@ -73,6 +177,7 @@ class Model:
     approx_bytes: int = 0
     enabled: bool = True
     notes: str | None = None
+    usage: Usage | None = None
 
     @property
     def org(self) -> str:
@@ -97,7 +202,8 @@ class Profile:
     all: bool = False
     include_disabled: bool = False
 
-    def matches(self, m: Model) -> bool:
+    def matches(self, m: Model | Runtime) -> bool:
+        """Models and runtimes share `id` and `tags`, so one rule set serves both."""
         if self.all:
             return True
         if m.id in self.ids:
@@ -121,6 +227,7 @@ class Catalog:
     profiles: dict[str, Profile]
     models: list[Model]
     default_profile: str | None = None
+    runtimes: list[Runtime] = field(default_factory=list)
 
     def by_id(self, model_id: str) -> Model:
         for m in self.models:
@@ -176,6 +283,22 @@ class Catalog:
             picked = [m for m in picked if m.category in set(categories)]
         return picked
 
+    def select_runtimes(self, models: list[Model], profile: str | None = None,
+                        by_tags: bool = True) -> list[Runtime]:
+        """Runtimes named by the selected models' `usage.runtime`, plus, when
+        `by_tags`, those the profile's rules match. `enabled: false` keeps a
+        runtime out unless the profile has `include_disabled`."""
+        prof = self.profile(profile)
+        named = {m.usage.runtime for m in models if m.usage and m.usage.runtime}
+        return [
+            rt for rt in self.runtimes
+            if (rt.enabled or prof.include_disabled)
+            and (rt.id in named or (by_tags and prof.matches(rt)))
+        ]
+
+    def runtime_by_id(self, runtime_id: str | None) -> Runtime | None:
+        return next((rt for rt in self.runtimes if rt.id == runtime_id), None)
+
 
 def load_catalog(path: str | Path) -> Catalog:
     path = Path(path)
@@ -216,6 +339,8 @@ def load_catalog(path: str | Path) -> Catalog:
         if missing:
             raise CatalogError(f"model {entry.get('id')!r} is missing {sorted(missing)}")
         m = Model(**entry)
+        if m.usage is not None:
+            m.usage = Usage.parse(m.id, m.usage)
         if m.id in seen:
             raise CatalogError(f"duplicate model id: {m.id}")
         if "/" not in m.hf_repo:
@@ -225,8 +350,13 @@ def load_catalog(path: str | Path) -> Catalog:
     if not models:
         raise CatalogError("config defines no models")
 
+    runtimes = [Runtime.parse(body) for body in raw.get("runtimes") or []]
+    rt_ids = [rt.id for rt in runtimes]
+    if len(rt_ids) != len(set(rt_ids)):
+        raise CatalogError("duplicate runtime ids")
+
     return Catalog(path=path, defaults=defaults, profiles=profiles, models=models,
-                   default_profile=default_profile)
+                   default_profile=default_profile, runtimes=runtimes)
 
 
 _ID_LINE = re.compile(r"^\s*-\s+id:\s*(\S+)\s*$")
@@ -277,6 +407,9 @@ STARTER_CONFIG = """\
 #   approx_bytes size of the matched files (written by --refresh-sizes)
 #   enabled      false = skipped unless a profile opts in or --enable is used
 #   notes        free text
+#   usage        how to run it: runtime, recommended settings, workflow files
+#
+# README.md and LICENSE* files are always downloaded, whatever the globs say.
 #
 # Globs follow the Hub's fnmatch rules: `*` also crosses `/`, so
 # `*.safetensors` matches `transformer/x.safetensors` too.
@@ -332,17 +465,87 @@ models:
     approx_bytes: 4683079206
     enabled: false
     notes: Disabled; pull it in with --enable qwen2.5-coder-7b-gguf.
+    # `usage` is written to USAGE.md next to the weights. Workflows are
+    # fetched into _workflows/<name> in the model's folder.
+    # usage:
+    #   runtime: llama.cpp
+    #   notes: |
+    #     llama-cli -m qwen2.5-coder-7b-instruct-q4_k_m.gguf -c 8192 --temp 0.7
+    #   workflows:
+    #     - name: example.json
+    #       url: https://raw.githubusercontent.com/<org>/<repo>/<commit>/example.json
+
+# Programs needed to run the models, archived under $DEST/_runtimes/<id>/ as
+# a git bundle of the full history, a source tarball of `ref` and, for GitHub
+# repos, the release assets of tag `ref` that match `release_assets`. A
+# profile picks the runtimes its models name in `usage.runtime`, plus those
+# whose tags it matches. --no-runtimes skips them.
+# runtimes:
+#   - id: llama.cpp
+#     git: https://github.com/ggml-org/llama.cpp
+#     ref: b6100                        # tag, branch or commit
+#     release_assets: ["*ubuntu-x64*"]  # globs over the release's asset names
+#     tags: [llm]
+#     enabled: true
+#     notes: CPU build; build from source for CUDA.
 """
 
 
-def write_starter_config(path: Path) -> int:
+def curated_in_clone() -> Path | None:
+    """The curated selection, when the script runs from a clone of its repo."""
+    path = Path(__file__).resolve().parent / "examples" / CURATED_CONFIG
+    return path if path.is_file() else None
+
+
+def fetch_text(url: str, timeout: float = 30) -> str:
+    with http_open(url, timeout=timeout) as resp:
+        return resp.read().decode("utf-8")
+
+
+def curated_text() -> str:
+    """The curated selection: from the clone, else from this version's tag, else main."""
+    local = curated_in_clone()
+    if local:
+        return local.read_text()
+    errors = []
+    for ref in (f"v{__version__}", "main"):
+        url = CURATED_URL.format(ref=ref)
+        try:
+            return fetch_text(url)
+        except (urllib.error.URLError, OSError) as exc:
+            errors.append(f"{url}: {exc}")
+    raise CatalogError("could not fetch the curated selection: " + "; ".join(errors)
+                       + ". Use --init --minimal for the small offline starter.")
+
+
+def write_starter_config(path: Path, minimal: bool = False) -> int:
     if path.exists():
         print(f"error: {path} already exists; refusing to overwrite it", file=sys.stderr)
         return 2
+    try:
+        text = STARTER_CONFIG if minimal else curated_text()
+    except CatalogError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(STARTER_CONFIG)
-    print(f"wrote {path}; edit it, then run: hfarchive --config {path} --list")
+    path.write_text(text)
+    what = "the minimal starter" if minimal else f"the curated selection ({CURATED_CONFIG})"
+    print(f"wrote {what} to {path}; edit it, then run: hfarchive --config {path} --list")
     return 0
+
+
+def resolve_config(arg: str | None) -> tuple[Path, str | None]:
+    """(config path, notice). Without --config: ./models.yaml, else the curated
+    selection when running from a clone. A missing file is left to load_catalog."""
+    if arg:
+        return Path(arg).expanduser(), None
+    default = Path(DEFAULT_CONFIG)
+    if default.is_file():
+        return default, None
+    curated = curated_in_clone()
+    if curated:
+        return curated, f"no ./{DEFAULT_CONFIG}; using the curated selection {curated}"
+    return default, None
 
 
 # ====================================================================== hub
@@ -366,6 +569,10 @@ class RepoStatus:
     files: list[tuple[str, int]] = field(default_factory=list)
     total_repo_bytes: int = 0
     error: str | None = None
+    # path -> {"sha256": ...} for LFS files, {"git_sha1": ...} for the rest
+    hashes: dict[str, dict] = field(default_factory=dict)
+    # model cards the include/exclude globs left out; fetched by name
+    extra_cards: list[str] = field(default_factory=list)
 
     @property
     def matched_files(self) -> int:
@@ -405,6 +612,31 @@ def _match(model: Model, names: list[str]) -> list[str]:
     )
 
 
+def is_model_card(name: str) -> bool:
+    """README.md and LICENSE*/LICENCE* at the repo root: always archived."""
+    if "/" in name:
+        return False
+    upper = name.upper()
+    return name == "README.md" or upper.startswith("LICENSE") or upper.startswith("LICENCE")
+
+
+def select_files(model: Model, names: list[str]) -> tuple[list[str], list[str]]:
+    """(files the globs match, model cards they left out). Both are archived."""
+    matched = _match(model, names)
+    chosen = set(matched)
+    return matched, [n for n in names if is_model_card(n) and n not in chosen]
+
+
+def sibling_hash(sibling) -> dict:
+    """The Hub's hash for one file: sha256 for LFS/Xet files, git blob sha1 otherwise."""
+    lfs = getattr(sibling, "lfs", None)
+    sha256 = lfs.get("sha256") if isinstance(lfs, dict) else getattr(lfs, "sha256", None)
+    if sha256:
+        return {"sha256": sha256}
+    blob = getattr(sibling, "blob_id", None)
+    return {"git_sha1": blob} if blob else {}
+
+
 def probe(model: Model, api: HfApi | None = None) -> RepoStatus:
     """Resolve one repo against the Hub. Never raises."""
     api = api or HfApi()
@@ -430,10 +662,16 @@ def probe(model: Model, api: HfApi | None = None) -> RepoStatus:
     st.exists = True
     st.gated = bool(info.gated)
     st.commit = info.sha
+    # files_metadata=True carries the same per-file lfs.sha256 and blob_id that
+    # get_paths_info / list_repo_tree(expand=True) return, for this exact commit.
     sizes = {s.rfilename: (s.size or 0) for s in info.siblings}
     st.total_repo_bytes = sum(sizes.values())
-    st.files = [(n, sizes[n]) for n in _match(model, list(sizes))]
-    if not st.files:
+    matched, st.extra_cards = select_files(model, list(sizes))
+    names = matched + st.extra_cards
+    st.files = [(n, sizes[n]) for n in names]
+    hashes = {s.rfilename: sibling_hash(s) for s in info.siblings}
+    st.hashes = {n: hashes[n] for n in names if hashes.get(n)}
+    if not matched:
         st.error = "include/exclude globs matched no files"
     return st
 
@@ -473,16 +711,39 @@ class DownloadResult:
     returncode: int | None = None
 
 
-def build_command(model: Model, dest: Path, hf_bin: str, max_workers: int) -> list[str]:
-    cmd = [hf_bin, "download", model.hf_repo, "--local-dir", str(model.dest_dir(dest))]
-    if model.revision:
-        cmd += ["--revision", model.revision]
+def _hf_download(model: Model, dest: Path, hf_bin: str, revision: str | None,
+                 names: list[str] = ()) -> list[str]:
+    """`revision` (the commit the probe resolved) overrides the entry's, so the
+    files on disk match the checksums recorded for that commit."""
+    cmd = [hf_bin, "download", model.hf_repo, *names, "--local-dir", str(model.dest_dir(dest))]
+    revision = revision or model.revision
+    if revision:
+        cmd += ["--revision", revision]
+    return cmd
+
+
+def build_command(model: Model, dest: Path, hf_bin: str, max_workers: int,
+                  revision: str | None = None) -> list[str]:
+    cmd = _hf_download(model, dest, hf_bin, revision)
     for pat in model.include:
         cmd += ["--include", pat]
     for pat in model.exclude:
         cmd += ["--exclude", pat]
     cmd += ["--max-workers", str(max_workers)]
     return cmd
+
+
+def build_card_command(model: Model, dest: Path, hf_bin: str, names: list[str],
+                       revision: str | None = None) -> list[str]:
+    """Fetch named files (model cards the globs excluded) into the same folder."""
+    return _hf_download(model, dest, hf_bin, revision, names)
+
+
+def _run_hf(cmd: list[str]) -> tuple[int, str]:
+    """Run `hf download` quietly; return (exit code, its last output lines)."""
+    proc = subprocess.run(cmd, capture_output=True, text=True)
+    tail = (proc.stderr or proc.stdout or "").strip().splitlines()[-5:]
+    return proc.returncode, " | ".join(tail) or f"hf download exited {proc.returncode}"
 
 
 def download_one(
@@ -511,23 +772,21 @@ def download_one(
 
     target = m.dest_dir(dest)
     target.mkdir(parents=True, exist_ok=True)
-    cmd = build_command(m, dest, hf_bin, max_workers)
+    cmds = [build_command(m, dest, hf_bin, max_workers, st.commit)]
+    if st.extra_cards:
+        cmds.append(build_card_command(m, dest, hf_bin, st.extra_cards, st.commit))
     with print_lock:
         log.info("%s -> %s (%s to fetch, %s already there)",
                  m.id, target, human(missing), human(here))
-        log.debug("exec: %s", " ".join(cmd))
+        for cmd in cmds:
+            log.debug("exec: %s", " ".join(cmd))
 
     # `hf download` resumes partial files and skips complete ones by itself.
-    proc = subprocess.run(cmd, capture_output=True, text=True)
-    if proc.returncode != 0:
-        tail = (proc.stderr or proc.stdout or "").strip().splitlines()[-5:]
-        return DownloadResult(
-            m, "failed",
-            bytes_expected=missing,
-            commit=st.commit,
-            message=" | ".join(tail) or f"hf download exited {proc.returncode}",
-            returncode=proc.returncode,
-        )
+    for cmd in cmds:
+        rc, message = _run_hf(cmd)
+        if rc != 0:
+            return DownloadResult(m, "failed", bytes_expected=missing, commit=st.commit,
+                                  message=message, returncode=rc)
     return DownloadResult(m, "downloaded", bytes_expected=missing, commit=st.commit)
 
 
@@ -581,37 +840,64 @@ def bookkeeping_dir(dest: Path) -> Path:
     return Path(dest) / BOOKKEEPING_DIR
 
 
-def manifest_append(dest: Path, results: list[DownloadResult],
-                    statuses: dict[str, RepoStatus]) -> Path:
+@contextlib.contextmanager
+def atomic_target(path: Path):
+    """Yield a `.part` path to write; move it onto `path` only on success."""
+    part = path.with_name(path.name + ".part")
+    try:
+        yield part
+        os.replace(part, path)
+    finally:
+        part.unlink(missing_ok=True)
+
+
+def manifest_write(dest: Path, records: list[dict]) -> Path:
+    """Append records, each stamped with time and host. Never rewrites."""
     d = bookkeeping_dir(dest)
     d.mkdir(parents=True, exist_ok=True)
     path = d / MANIFEST_NAME
-    now = time.strftime("%Y-%m-%dT%H:%M:%S%z")
-    host = platform.node()
+    stamp = {"timestamp": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "host": platform.node()}
     with path.open("a", encoding="utf-8") as fh:
-        for res in results:
-            m = res.model
-            st = statuses.get(m.id)
-            record = {
-                "timestamp": now,
-                "host": host,
-                "id": m.id,
-                "hf_repo": m.hf_repo,
-                "revision": m.revision,
-                "commit": res.commit,
-                "category": m.category,
-                "status": res.status,
-                "dest": str(m.dest_dir(dest)),
-                "rel_dest": os.path.relpath(m.dest_dir(dest), dest),
-                "files": st.matched_files if st else None,
-                "bytes_matched": st.matched_bytes if st else None,
-                "bytes_transferred_estimate": res.bytes_expected,
-                "license": m.license,
-                "gated": m.gated,
-                "message": res.message or None,
-            }
-            fh.write(json.dumps(record, ensure_ascii=False) + "\n")
+        for record in records:
+            fh.write(json.dumps({**stamp, **record}, ensure_ascii=False) + "\n")
     return path
+
+
+def checksum_records(st: RepoStatus) -> list[dict]:
+    return [{"path": rel, "size": size, **st.hashes.get(rel, {})} for rel, size in st.files]
+
+
+def manifest_append(dest: Path, results: list[DownloadResult],
+                    statuses: dict[str, RepoStatus],
+                    extras: dict[str, dict] | None = None) -> Path:
+    """One record per model. `extras` adds per-id fields (usage, workflows)."""
+    records = []
+    for res in results:
+        m = res.model
+        st = statuses.get(m.id)
+        record = {
+            "kind": "model",
+            "id": m.id,
+            "hf_repo": m.hf_repo,
+            "revision": m.revision,
+            "commit": res.commit,
+            "category": m.category,
+            "status": res.status,
+            "dest": str(m.dest_dir(dest)),
+            "rel_dest": os.path.relpath(m.dest_dir(dest), dest),
+            "files": st.matched_files if st else None,
+            "bytes_matched": st.matched_bytes if st else None,
+            "bytes_transferred_estimate": res.bytes_expected,
+            "license": m.license,
+            "gated": m.gated,
+            "runtime": m.usage.runtime if m.usage else None,
+            "message": res.message or None,
+        }
+        if st and res.status in GOOD_STATUSES:
+            record["checksums"] = checksum_records(st)
+        record.update((extras or {}).get(m.id, {}))
+        records.append(record)
+    return manifest_write(dest, records)
 
 
 def manifest_read(dest: Path) -> list[dict]:
@@ -622,6 +908,541 @@ def manifest_read(dest: Path) -> list[dict]:
             if line.strip()]
 
 
+def latest_records(records: list[dict], kind: str) -> dict[str, dict]:
+    """The newest successful record per id. Records before 1.1 have no `kind`
+    and are models."""
+    out: dict[str, dict] = {}
+    for rec in records:
+        if rec.get("kind", "model") == kind and rec.get("status") in GOOD_STATUSES:
+            out[rec["id"]] = rec
+    return out
+
+
+# ================================================================ integrity
+PROGRESS_MIN_BYTES = 512 * 1024 * 1024
+
+
+def hash_file(path: Path, algo: str, label: str | None = None) -> str:
+    """sha256 of the bytes, or the git blob sha1 (`git hash-object`) when
+    algo == "git_sha1". Shows progress on stderr for large files."""
+    size = path.stat().st_size
+    if algo == "sha256":
+        h = hashlib.sha256()
+    elif algo == "git_sha1":
+        h = hashlib.sha1()
+        h.update(f"blob {size}\0".encode())
+    else:
+        raise ValueError(f"unknown hash: {algo}")
+    show = size >= PROGRESS_MIN_BYTES and label is not None
+    tty = show and sys.stderr.isatty()
+    if show and not tty:
+        log.info("hashing %s (%s)...", label, human(size))
+    done, last = 0, 0.0
+    with path.open("rb") as fh:
+        while chunk := fh.read(8 * 1024 * 1024):
+            h.update(chunk)
+            done += len(chunk)
+            if tty and time.monotonic() - last > 0.5:
+                last = time.monotonic()
+                sys.stderr.write(f"\r  hashing {label}: {done * 100 // size:3d}% "
+                                 f"of {human(size)}")
+                sys.stderr.flush()
+    if tty:
+        sys.stderr.write("\r\033[K")
+        sys.stderr.flush()
+    return h.hexdigest()
+
+
+def artifact_record(path: Path, dest: Path, **extra) -> dict:
+    return {"path": os.path.relpath(path, dest), "size": path.stat().st_size,
+            "sha256": hash_file(path, "sha256", path.name), **extra}
+
+
+@dataclass
+class CheckItem:
+    label: str
+    path: Path
+    size: int | None
+    algo: str | None = None
+    expected: str | None = None
+
+
+def check_items(dest: Path, records: list[dict]) -> tuple[list[CheckItem], list[str]]:
+    """Files the manifest says the drive holds, and ids with nothing to check."""
+    items: list[CheckItem] = []
+    unverifiable: list[str] = []
+    for mid, rec in latest_records(records, "model").items():
+        if "checksums" not in rec:
+            unverifiable.append(mid)
+            continue
+        root = Path(dest) / rec["rel_dest"]
+        for f in rec["checksums"]:
+            algo = "sha256" if "sha256" in f else "git_sha1" if "git_sha1" in f else None
+            items.append(CheckItem(f"{mid}: {f['path']}", root / f["path"], f.get("size"),
+                                   algo, f.get(algo) if algo else None))
+        for wf in rec.get("workflows") or []:
+            if wf.get("path"):
+                items.append(CheckItem(f"{mid}: {wf['path']}", Path(dest) / wf["path"],
+                                       wf.get("size"), "sha256", wf.get("sha256")))
+    for rid, rec in latest_records(records, "runtime").items():
+        for art in rec.get("artifacts") or []:
+            items.append(CheckItem(f"runtime {rid}: {art['path']}", Path(dest) / art["path"],
+                                   art.get("size"), "sha256", art.get("sha256")))
+    return items, unverifiable
+
+
+def verify_item(item: CheckItem, fast: bool) -> str | None:
+    """None if the file is intact, else a one-line problem."""
+    try:
+        size = item.path.stat().st_size
+    except OSError:
+        return "missing"
+    if item.size is not None and size != item.size:
+        return f"wrong size: {size} bytes, expected {item.size}"
+    if fast or not item.algo or not item.expected:
+        return None
+    actual = hash_file(item.path, item.algo, item.label)
+    if actual != item.expected:
+        return f"wrong {item.algo}: {actual}, expected {item.expected}"
+    return None
+
+
+def cmd_check(dest: Path, fast: bool, as_json: bool) -> int:
+    records = manifest_read(dest)
+    if not records:
+        log.error("no manifest at %s; nothing to check", bookkeeping_dir(dest) / MANIFEST_NAME)
+        return 2
+    items, unverifiable = check_items(dest, records)
+    mode = "sizes only" if fast else "sizes and hashes"
+    total = sum(i.size or 0 for i in items)
+    log.info("checking %d files (%s, %s) under %s...", len(items), human(total), mode, dest)
+    problems = []
+    for item in items:
+        problem = verify_item(item, fast)
+        if problem:
+            problems.append({"file": item.label, "path": str(item.path), "problem": problem})
+            if not as_json:
+                log.error("%s: %s", item.label, problem)
+    if as_json:
+        print(json.dumps({"checked": len(items), "fast": fast, "problems": problems,
+                          "unverifiable": unverifiable}, indent=2))
+    for mid in unverifiable:
+        log.warning("%s: no checksums recorded (archived before hfarchive 1.1); "
+                    "re-run the download to record them", mid)
+    if problems:
+        log.error("%d of %d files are missing or damaged", len(problems), len(items))
+        return 1
+    log.info("all %d files intact (%s)", len(items), mode)
+    return 0
+
+
+# ================================================================ http
+def http_open(url: str, headers: dict | None = None, method: str = "GET",
+              timeout: float = 60):
+    req = urllib.request.Request(url, method=method,
+                                 headers={"User-Agent": USER_AGENT, **(headers or {})})
+    return urllib.request.urlopen(req, timeout=timeout)
+
+
+def fetch_url(url: str, target: Path, expected_size: int | None = None,
+              expected_sha256: str | None = None) -> tuple[int, str]:
+    """Download to `target` atomically; return (size, sha256). Raises on any
+    error or mismatch, leaving any previous `target` untouched."""
+    target.parent.mkdir(parents=True, exist_ok=True)
+    h = hashlib.sha256()
+    size = 0
+    with atomic_target(target) as part:
+        with http_open(url) as resp, part.open("wb") as out:
+            while chunk := resp.read(1024 * 1024):
+                out.write(chunk)
+                h.update(chunk)
+                size += len(chunk)
+        digest = h.hexdigest()
+        if expected_size is not None and size != expected_size:
+            raise OSError(f"got {size} bytes, expected {expected_size}")
+        if expected_sha256 and digest != expected_sha256:
+            raise OSError(f"sha256 {digest} does not match the published {expected_sha256}")
+    return size, digest
+
+
+def remote_size(url: str) -> int | None:
+    try:
+        with http_open(url, method="HEAD", timeout=20) as resp:
+            length = resp.headers.get("Content-Length")
+            return int(length) if length else None
+    except (urllib.error.URLError, OSError, ValueError):
+        return None
+
+
+# ================================================================== github
+class GitHubError(Exception):
+    def __init__(self, message: str, status: int | None = None):
+        super().__init__(message)
+        self.status = status
+
+
+@functools.cache
+def github_token() -> str | None:
+    """GITHUB_TOKEN, else `gh auth token`, else None. Never logged."""
+    token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
+    if not token and shutil.which("gh"):
+        try:
+            proc = subprocess.run(["gh", "auth", "token"], capture_output=True,
+                                  text=True, timeout=15)
+            token = proc.stdout.strip() if proc.returncode == 0 else None
+        except (OSError, subprocess.SubprocessError):
+            token = None
+    return token or None
+
+
+def github_api(path: str) -> dict:
+    headers = {"Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"}
+    token = github_token()
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    try:
+        with http_open("https://api.github.com" + path, headers) as resp:
+            return json.load(resp)
+    except urllib.error.HTTPError as exc:
+        if exc.code in (403, 429) and exc.headers.get("X-RateLimit-Remaining") == "0":
+            hint = ("" if token else " Unauthenticated requests get 60 per hour; set "
+                    "GITHUB_TOKEN or run `gh auth login`.")
+            raise GitHubError(f"GitHub API rate limit reached.{hint}", exc.code) from exc
+        raise GitHubError(f"GitHub API {path}: HTTP {exc.code}", exc.code) from exc
+    except (urllib.error.URLError, OSError) as exc:
+        raise GitHubError(f"GitHub API {path}: {exc}") from exc
+
+
+def release_assets(rt: Runtime) -> list[dict]:
+    """Assets of the release tagged `rt.ref` whose names match `rt.release_assets`."""
+    owner, repo = rt.github_repo  # type: ignore[misc]  # guaranteed by Runtime.parse
+    try:
+        release = github_api(f"/repos/{owner}/{repo}/releases/tags/{rt.ref}")
+    except GitHubError as exc:
+        if exc.status == 404:
+            raise GitHubError(f"no GitHub release tagged {rt.ref!r} in {owner}/{repo}") from exc
+        raise
+    out = []
+    for asset in release.get("assets") or []:
+        if any(fnmatch.fnmatchcase(asset["name"], pat) for pat in rt.release_assets):
+            digest = asset.get("digest") or ""
+            out.append({
+                "name": asset["name"], "size": asset.get("size"),
+                "url": asset["browser_download_url"],
+                "sha256": digest.split(":", 1)[1] if digest.startswith("sha256:") else None,
+            })
+    if not out:
+        raise GitHubError(f"release {rt.ref!r} has no assets matching {rt.release_assets}")
+    return out
+
+
+# ================================================================ runtimes
+class GitError(Exception):
+    pass
+
+
+def git(*args: str) -> str:
+    """Run git; return stdout. Raises GitError with git's own message."""
+    try:
+        proc = subprocess.run(["git", *args], capture_output=True, text=True)
+    except FileNotFoundError as exc:
+        raise GitError("git is not installed") from exc
+    if proc.returncode != 0:
+        tail = (proc.stderr or proc.stdout).strip().splitlines()[-3:]
+        raise GitError(f"git {args[0]} failed: " + " | ".join(tail))
+    return proc.stdout
+
+
+_FULL_SHA = re.compile(r"^[0-9a-f]{40}$")
+
+
+def resolve_remote_ref(url: str, ref: str) -> str | None:
+    """Commit sha that `ref` names on the remote, without cloning. None when
+    the remote does not advertise it (e.g. an abbreviated sha)."""
+    if _FULL_SHA.match(ref):
+        return ref
+    found: dict[str, str] = {}
+    # git lists a tag's peeled commit (`<tag>^{}`) only when asked for it.
+    for line in git("ls-remote", url, ref, f"{ref}^{{}}").splitlines():
+        sha, name = line.split("\t", 1)
+        found[name] = sha
+    for name in (f"refs/tags/{ref}^{{}}", f"refs/tags/{ref}", f"refs/heads/{ref}", ref):
+        if name in found:
+            return found[name]
+    return None
+
+
+@dataclass
+class RuntimeStatus:
+    runtime: Runtime
+    commit: str | None = None
+    assets: list[dict] = field(default_factory=list)
+    error: str | None = None
+    previous: dict | None = None  # manifest record when this commit is already archived
+
+    @property
+    def archived(self) -> bool:
+        return self.previous is not None
+
+    @property
+    def asset_bytes(self) -> int:
+        return sum(a.get("size") or 0 for a in self.assets)
+
+
+def already_archived(st: RuntimeStatus, dest: Path | None,
+                     records: dict[str, dict]) -> dict | None:
+    """The previous record if it holds this commit and every artifact is still there."""
+    prev = records.get(st.runtime.id)
+    if dest is None or not prev or not st.commit or prev.get("commit") != st.commit:
+        return None
+    arts = prev.get("artifacts") or []
+    for art in arts:
+        p = Path(dest) / art["path"]
+        if not p.is_file() or p.stat().st_size != art.get("size"):
+            return None
+    have = {Path(a["path"]).name for a in arts if a.get("kind") == "release-asset"}
+    if not {a["name"] for a in st.assets} <= have:
+        return None
+    return prev
+
+
+def probe_runtime(rt: Runtime, dest: Path | None, records: dict[str, dict]) -> RuntimeStatus:
+    """Resolve the ref and list release assets. Never raises."""
+    st = RuntimeStatus(rt)
+    try:
+        st.commit = resolve_remote_ref(rt.git, rt.ref)
+        if st.commit is None:
+            log.debug("%s: ref %s not advertised by the remote; resolving after fetch",
+                      rt.id, rt.ref)
+        if rt.release_assets:
+            st.assets = release_assets(rt)
+    except (GitError, GitHubError) as exc:
+        st.error = str(exc)
+        return st
+    st.previous = already_archived(st, dest, records)
+    return st
+
+
+def probe_runtimes(runtimes: list[Runtime], dest: Path | None) -> list[RuntimeStatus]:
+    if not runtimes:
+        return []
+    records = latest_records(manifest_read(dest), "runtime") if dest and dest.is_dir() else {}
+    if any(rt.release_assets for rt in runtimes):
+        github_token()  # resolve once, before the threads race to run `gh`
+    with cf.ThreadPoolExecutor(max_workers=min(8, len(runtimes))) as ex:
+        return list(ex.map(lambda rt: probe_runtime(rt, dest, records), runtimes))
+
+
+@dataclass
+class RuntimeResult:
+    runtime: Runtime
+    status: str  # downloaded | up-to-date | failed
+    commit: str | None = None
+    artifacts: list[dict] = field(default_factory=list)
+    message: str = ""
+
+
+def update_mirror(rt: Runtime, mirror: Path) -> None:
+    """A bare mirror of branches and tags. Plain `git clone --mirror` would also
+    fetch GitHub's refs/pull/*, which can double the size for busy repos."""
+    if not mirror.is_dir():
+        git("init", "--bare", "--quiet", str(mirror))
+        git("-C", str(mirror), "remote", "add", "origin", rt.git)
+        git("-C", str(mirror), "config", "--replace-all", "remote.origin.fetch",
+            "+refs/heads/*:refs/heads/*")
+        git("-C", str(mirror), "config", "--add", "remote.origin.fetch",
+            "+refs/tags/*:refs/tags/*")
+    git("-C", str(mirror), "fetch", "--prune", "--quiet", "origin")
+
+
+def archive_runtime(st: RuntimeStatus, dest: Path) -> RuntimeResult:
+    """Mirror, bundle, source tarball and release assets under $DEST/_runtimes/<id>/."""
+    rt = st.runtime
+    if st.error:
+        return RuntimeResult(rt, "failed", st.commit, message=st.error)
+    if st.previous:
+        return RuntimeResult(rt, "up-to-date", st.commit,
+                             artifacts=st.previous.get("artifacts") or [])
+    d = rt.dest_dir(dest)
+    d.mkdir(parents=True, exist_ok=True)
+    mirror = d / "mirror.git"
+    artifacts: list[dict] = []
+    try:
+        update_mirror(rt, mirror)
+        target = st.commit or rt.ref
+        commit = git("-C", str(mirror), "rev-parse", "--verify", f"{target}^{{commit}}").strip()
+
+        bundle = d / f"{rt.id}-{commit}.bundle"
+        if not bundle.is_file():
+            with atomic_target(bundle) as part:
+                git("-C", str(mirror), "bundle", "create", "--quiet", str(part), "--all")
+        artifacts.append(artifact_record(bundle, dest, kind="git-bundle"))
+
+        tarball = d / f"{rt.id}-{rt.safe_ref}-src.tar.gz"
+        with atomic_target(tarball) as part:
+            git("-C", str(mirror), "archive", "--format=tar.gz",
+                f"--prefix={rt.id}-{rt.safe_ref}/", "-o", str(part), commit)
+        artifacts.append(artifact_record(tarball, dest, kind="source"))
+
+        for asset in st.assets:
+            path = d / f"release-{rt.safe_ref}" / asset["name"]
+            log.info("%s: fetching release asset %s (%s)", rt.id, asset["name"],
+                     human(asset.get("size") or 0))
+            size, sha = fetch_url(asset["url"], path, asset.get("size"), asset.get("sha256"))
+            artifacts.append({"path": os.path.relpath(path, dest), "size": size,
+                              "sha256": sha, "kind": "release-asset", "url": asset["url"]})
+    except (GitError, GitHubError, OSError, urllib.error.URLError) as exc:
+        return RuntimeResult(rt, "failed", st.commit, artifacts, message=str(exc))
+    return RuntimeResult(rt, "downloaded", commit, artifacts)
+
+
+def runtime_records(results: list[RuntimeResult], dest: Path) -> list[dict]:
+    return [{
+        "kind": "runtime", "id": r.runtime.id, "git": r.runtime.git, "ref": r.runtime.ref,
+        "commit": r.commit, "status": r.status,
+        "rel_dest": os.path.relpath(r.runtime.dest_dir(dest), dest),
+        "artifacts": r.artifacts, "tags": r.runtime.tags, "notes": r.runtime.notes,
+        "message": r.message or None,
+    } for r in results]
+
+
+# =================================================================== usage
+def usage_markdown(entries: list[Model], model_dir: Path, dest: Path, cat: Catalog,
+                   commits: dict[str, str | None]) -> str:
+    """USAGE.md for one folder; several entries may share a repo folder."""
+    repo = entries[0].hf_repo
+    lines = [f"# {repo}", "",
+             f"Hub page: https://huggingface.co/{repo}", "",
+             "Written by hfarchive from the archive config. The Hub page may be gone "
+             "by the time you read this; everything below was archived on this drive.", ""]
+    for m in entries:
+        u = m.usage or Usage()
+        lines += [f"## {m.id}", ""]
+        lines.append(f"- Revision: `{m.revision or 'main'}`, commit "
+                     f"`{commits.get(m.id) or 'not recorded'}`")
+        if m.include:
+            lines.append("- Files: " + ", ".join(f"`{p}`" for p in m.include))
+        if u.runtime:
+            rt = cat.runtime_by_id(u.runtime)
+            where = (f", archived under `{os.path.relpath(rt.dest_dir(dest), model_dir)}/` "
+                     f"(ref `{rt.ref}`)" if rt else "")
+            lines.append(f"- Runtime: {u.runtime}{where}")
+        if m.license:
+            lines.append(f"- License: {m.license}")
+        lines.append("")
+        if u.notes:
+            lines += ["### Recommended settings", "", u.notes.rstrip(), ""]
+        if u.workflows:
+            lines += ["### Workflows", ""]
+            lines += [f"- `{WORKFLOWS_DIR}/{wf.name}` (from <{wf.url}>)" for wf in u.workflows]
+            lines.append("")
+        if m.notes:
+            lines += ["### Notes", "", m.notes.rstrip(), ""]
+    return "\n".join(lines)
+
+
+def write_usage_files(models: list[Model], dest: Path, cat: Catalog,
+                      commits: dict[str, str | None]) -> dict[str, dict]:
+    """Fetch workflows and write USAGE.md for each model with `usage`.
+
+    Returns per-id manifest fields; a workflow that fails carries an `error`.
+    """
+    extras: dict[str, dict] = {}
+    for m in models:
+        if not m.usage:
+            continue
+        model_dir = m.dest_dir(dest)
+        model_dir.mkdir(parents=True, exist_ok=True)
+        workflows = []
+        for wf in m.usage.workflows:
+            path = model_dir / WORKFLOWS_DIR / wf.name
+            entry = {"name": wf.name, "url": wf.url, "path": os.path.relpath(path, dest)}
+            try:
+                entry["size"], entry["sha256"] = fetch_url(wf.url, path)
+            except (urllib.error.URLError, OSError) as exc:
+                entry["error"] = str(exc)
+                log.error("%s: workflow %s FAILED — %s", m.id, wf.name, exc)
+            workflows.append(entry)
+        sharing = [x for x in cat.models if x.usage and x.dest_dir(dest) == model_dir]
+        usage = model_dir / USAGE_NAME
+        usage.write_text(usage_markdown(sharing or [m], model_dir, dest, cat, commits),
+                         encoding="utf-8")
+        extras[m.id] = {"usage": os.path.relpath(usage, dest), "workflows": workflows}
+    return extras
+
+
+# =================================================================== index
+def _cell(text: object) -> str:
+    return str(text).replace("|", "\\|").replace("\n", " ")
+
+
+def _link(text: str, path: str) -> str:
+    return f"[{_cell(text)}](<{path}>)"
+
+
+def index_markdown(records: list[dict]) -> str:
+    models = latest_records(records, "model")
+    runtimes = latest_records(records, "runtime")
+    total = sum(r.get("bytes_matched") or 0 for r in models.values())
+    out = [
+        "# Model archive", "",
+        f"Regenerated by hfarchive {__version__} on {time.strftime('%Y-%m-%d %H:%M %Z')} "
+        f"from `{BOOKKEEPING_DIR}/{MANIFEST_NAME}`.", "",
+        "Each model folder is a plain snapshot of a Hugging Face repo at the commit shown, "
+        "laid out as `<category>/<org>/<repo>/`. Point llama.cpp, ComfyUI or "
+        "`from_pretrained()` at it. `USAGE.md` holds the recommended settings and "
+        f"`{WORKFLOWS_DIR}/` the workflow files.", "",
+        "Integrity: the manifest records every file's size and hash (sha256 for LFS "
+        "files, git blob sha1 for the rest). `hfarchive --check --dest <this drive>` "
+        "recomputes them; without hfarchive, `sha256sum <file>` or "
+        "`git hash-object <file>` give the same values.", "",
+        "Runtimes are in `_runtimes/<id>/`: restore the source with "
+        "`git clone <id>-<sha>.bundle <dir> && git -C <dir> checkout <sha>`, or unpack "
+        "the `-src.tar.gz`. Prebuilt binaries, if any, are in `release-<ref>/`.", "",
+        f"## Models ({len(models)}, {human(total)})", "",
+    ]
+    by_cat: dict[str, list[dict]] = {}
+    for rec in models.values():
+        by_cat.setdefault(rec.get("category") or "?", []).append(rec)
+    for category in sorted(by_cat):
+        out += [f"### {category}", "",
+                "| Model | Repo | Revision / commit | Size | Runtime | Usage | Workflows |",
+                "|---|---|---|---:|---|---|---|"]
+        for rec in sorted(by_cat[category], key=lambda r: r["id"]):
+            wfs = ", ".join(_link(w["name"], w["path"]) for w in rec.get("workflows") or []
+                            if w.get("path") and not w.get("error")) or "-"
+            usage = _link(USAGE_NAME, rec["usage"]) if rec.get("usage") else "-"
+            out.append(" | ".join([
+                f"| {_cell(rec['id'])}",
+                _link(rec["hf_repo"], rec["rel_dest"] + "/"),
+                f"`{_cell(rec.get('revision') or 'main')}` @ `{rec.get('commit') or '?'}`",
+                human(rec.get("bytes_matched") or 0),
+                _cell(rec.get("runtime") or "-"),
+                usage, wfs,
+            ]) + " |")
+        out.append("")
+    out += [f"## Runtimes ({len(runtimes)})", ""]
+    if runtimes:
+        out += ["| Runtime | Source | Ref | Commit | Files |", "|---|---|---|---|---|"]
+        for rid in sorted(runtimes):
+            rec = runtimes[rid]
+            files = ", ".join(_link(Path(a["path"]).name, a["path"])
+                              for a in rec.get("artifacts") or [])
+            out.append(f"| {_cell(rid)} | <{rec.get('git')}> | `{_cell(rec.get('ref'))}` | "
+                       f"`{rec.get('commit') or '?'}` | {files or '-'} |")
+    else:
+        out.append("None archived.")
+    out.append("")
+    return "\n".join(out)
+
+
+def write_index(dest: Path) -> Path:
+    path = Path(dest) / INDEX_NAME
+    with atomic_target(path) as part:
+        part.write_text(index_markdown(manifest_read(dest)), encoding="utf-8")
+    return path
+
+
 # ====================================================================== cli
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
@@ -630,17 +1451,20 @@ def build_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
             "examples:\n"
-            "  hfarchive --init\n"
+            "  hfarchive --init                 # curated selection -> ./models.yaml\n"
+            "  hfarchive --init --minimal       # small commented starter instead\n"
             "  hfarchive --list\n"
             "  hfarchive --verify-only --config examples/tweet-2026-09.yaml\n"
             "  hfarchive --dry-run --dest /mnt/backup\n"
             "  hfarchive --dest /mnt/backup --profile embeddings\n"
             "  hfarchive --dest /mnt/backup --allow-large\n"
+            "  hfarchive --check --dest /mnt/backup [--fast]\n"
         ),
     )
     p.add_argument("--version", action="version", version=f"hfarchive {__version__}")
-    p.add_argument("--config", default=DEFAULT_CONFIG,
-                   help=f"path to the YAML config (default: ./{DEFAULT_CONFIG})")
+    p.add_argument("--config", default=None,
+                   help=f"path to the YAML config (default: ./{DEFAULT_CONFIG}; in a clone "
+                        f"without it, examples/{CURATED_CONFIG})")
     p.add_argument("--profile", default=None,
                    help="profile to resolve (default: the config's default_profile, "
                         "else every enabled entry)")
@@ -649,7 +1473,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     mode = p.add_argument_group("modes")
     mode.add_argument("--init", action="store_true",
-                      help="write a commented starter config at --config and exit")
+                      help=f"write the curated selection ({CURATED_CONFIG}) to --config "
+                           "and exit")
+    mode.add_argument("--minimal", action="store_true",
+                      help="with --init: write a small commented starter instead")
     mode.add_argument("--list", action="store_true", help="print the resolved selection, no network")
     mode.add_argument("--verify-only", action="store_true",
                       help="check every repo exists on the Hub, download nothing")
@@ -657,12 +1484,18 @@ def build_parser() -> argparse.ArgumentParser:
                       help="resolve sizes and target paths, write nothing")
     mode.add_argument("--refresh-sizes", action="store_true",
                       help="write measured approx_bytes back into the config")
+    mode.add_argument("--check", action="store_true",
+                      help="verify the archive at --dest against its manifest; no network")
+    mode.add_argument("--fast", action="store_true",
+                      help="with --check: compare sizes only, skip hashing")
 
     sel = p.add_argument_group("selection")
     sel.add_argument("--only", default="", help="comma-separated model ids to use instead of the profile")
     sel.add_argument("--exclude", default="", help="comma-separated model ids to drop")
     sel.add_argument("--enable", default="", help="comma-separated ids to force in even if disabled")
     sel.add_argument("--category", default="", help="comma-separated categories to keep")
+    sel.add_argument("--no-runtimes", action="store_true",
+                     help="skip the runtimes the selection would include")
 
     beh = p.add_argument_group("download behaviour")
     beh.add_argument("--jobs", type=int, default=None, help="repos downloaded in parallel")
@@ -745,7 +1578,61 @@ def flag_str(m: Model) -> str:
     return ",".join(bits) or "-"
 
 
-def cmd_list(cat: Catalog, models: list[Model], args) -> int:
+def runtime_users(rt: Runtime, models: list[Model]) -> list[str]:
+    return [m.id for m in models if m.usage and m.usage.runtime == rt.id]
+
+
+def workflow_rows(models: list[Model]) -> list[tuple[Model, Workflow]]:
+    return [(m, wf) for m in models if m.usage for wf in m.usage.workflows]
+
+
+def render_extras(models: list[Model], runtimes: list[Runtime],
+                  rt_status: dict[str, RuntimeStatus] | None = None,
+                  wf_sizes: dict[tuple[str, str], int | None] | None = None) -> str:
+    """Runtime and workflow tables shared by --list (offline) and --dry-run."""
+    parts = []
+    if runtimes:
+        rows = []
+        for rt in runtimes:
+            users = runtime_users(rt, models)
+            used_by = ", ".join(users) if len(users) <= 2 else f"{len(users)} models"
+            if rt_status is None:
+                rows.append([rt.id, rt.ref, ", ".join(rt.release_assets) or "-", used_by,
+                             rt.git])
+                continue
+            st = rt_status[rt.id]
+            state = "ERROR: " + st.error if st.error else "archived" if st.archived else "to fetch"
+            assets = f"{len(st.assets)}, {human(st.asset_bytes)}" if st.assets else "-"
+            rows.append([rt.id, rt.ref, (st.commit or "?")[:12], assets, used_by, rt.git, state])
+        headers = (["ID", "REF", "COMMIT", "ASSETS", "USED BY", "GIT", "STATUS"]
+                   if rt_status is not None else ["ID", "REF", "RELEASE ASSETS", "USED BY", "GIT"])
+        parts.append(f"runtimes ({len(runtimes)}):\n" + render_table(headers, rows))
+    wfs = workflow_rows(models)
+    if wfs:
+        rows = []
+        for m, wf in wfs:
+            size = (wf_sizes or {}).get((m.id, wf.name))
+            rows.append([m.id, wf.name, human(size) if size is not None else "?", wf.url])
+        parts.append(f"workflows ({len(wfs)}):\n"
+                     + render_table(["MODEL", "NAME", "SIZE", "URL"], rows, "llrl"))
+    known = {rt.id for rt in runtimes}
+    dangling = sorted({m.usage.runtime for m in models
+                       if m.usage and m.usage.runtime and m.usage.runtime not in known})
+    if dangling:
+        parts.append("runtimes named in usage but not archived by this selection: "
+                     + ", ".join(dangling))
+    return "\n\n".join(parts)
+
+
+def runtime_json(rt: Runtime) -> dict:
+    return asdict(rt)
+
+
+def usage_json(m: Model) -> dict | None:
+    return asdict(m.usage) if m.usage else None
+
+
+def cmd_list(cat: Catalog, models: list[Model], runtimes: list[Runtime], args) -> int:
     prof = cat.profile(args.profile)
     if args.json:
         print(json.dumps(
@@ -759,9 +1646,11 @@ def cmd_list(cat: Catalog, models: list[Model], args) -> int:
                         "tags": m.tags, "license": m.license, "gated": m.gated,
                         "approx_bytes": m.approx_bytes, "enabled": m.enabled,
                         "include": m.include, "exclude": m.exclude, "notes": m.notes,
+                        "usage": usage_json(m),
                     }
                     for m in models
                 ],
+                "runtimes": [runtime_json(rt) for rt in runtimes],
             },
             indent=2,
         ))
@@ -781,6 +1670,9 @@ def cmd_list(cat: Catalog, models: list[Model], args) -> int:
     unknown = sum(1 for m in models if not m.approx_bytes)
     print(f"\n{len(models)} models, approx {human(known)}"
           + (f" (+{unknown} unmeasured; run --refresh-sizes)" if unknown else ""))
+    extras = render_extras(models, runtimes)
+    if extras:
+        print("\n" + extras)
     return 0
 
 
@@ -876,14 +1768,24 @@ def plan_rows(statuses: list[RepoStatus], dest: Path | None) -> list[dict]:
     return rows
 
 
-def cmd_plan(models: list[Model], args, defaults: dict, dest: Path | None,
-             dest_problems: list[str], forced_dry: bool,
+def probe_workflow_sizes(models: list[Model]) -> dict[tuple[str, str], int | None]:
+    wfs = workflow_rows(models)
+    if not wfs:
+        return {}
+    with cf.ThreadPoolExecutor(max_workers=min(8, len(wfs))) as ex:
+        sizes = list(ex.map(lambda pair: remote_size(pair[1].url), wfs))
+    return {(m.id, wf.name): size for (m, wf), size in zip(wfs, sizes, strict=True)}
+
+
+def cmd_plan(cat: Catalog, models: list[Model], runtimes: list[Runtime], args,
+             dest: Path | None, dest_problems: list[str], forced_dry: bool,
              fatal_dest: bool) -> tuple[int, bool]:
     """Shared path for --dry-run and the real download.
 
     Returns (exit code, whether any download was actually attempted). Nothing is
     written to the destination unless that second value is True.
     """
+    defaults = cat.defaults
     large_gb = args.large_repo_gb if args.large_repo_gb is not None else defaults["large_repo_gb"]
     min_free_gb = args.min_free_gb if args.min_free_gb is not None else defaults["min_free_gb"]
     large_bytes = large_gb * 1e9
@@ -891,9 +1793,14 @@ def cmd_plan(models: list[Model], args, defaults: dict, dest: Path | None,
     log.info("resolving %d repos against the Hub...", len(models))
     statuses = probe_all(models)
     rows = plan_rows(statuses, dest)
+    if runtimes:
+        log.info("resolving %d runtime(s)...", len(runtimes))
+    rt_statuses = probe_runtimes(runtimes, dest)
+    rt_by_id = {st.runtime.id: st for st in rt_statuses}
+    dry = args.dry_run or forced_dry
+    wf_sizes = probe_workflow_sizes(models) if dry else {}
 
     have_token = token_available()
-    dry = args.dry_run or forced_dry
 
     table = []
     for r in rows:
@@ -924,6 +1831,7 @@ def cmd_plan(models: list[Model], args, defaults: dict, dest: Path | None,
     if args.json:
         print(json.dumps([
             {
+                "kind": "model",
                 "id": r["model"].id, "hf_repo": r["model"].hf_repo,
                 "exists": r["status"].exists, "gated": r["model"].gated,
                 "files": r["status"].matched_files,
@@ -931,15 +1839,30 @@ def cmd_plan(models: list[Model], args, defaults: dict, dest: Path | None,
                 "bytes_missing": r["missing"], "bytes_present": r["present"],
                 "commit": r["status"].commit,
                 "dest": str(r["model"].dest_dir(dest)) if dest else None,
+                "workflows": [
+                    {"name": w.name, "url": w.url, "size": wf_sizes.get((r["model"].id, w.name))}
+                    for w in (r["model"].usage.workflows if r["model"].usage else [])
+                ],
             } for r in rows
+        ] + [
+            {
+                "kind": "runtime", **runtime_json(st.runtime), "commit": st.commit,
+                "assets": [{"name": a["name"], "size": a["size"]} for a in st.assets],
+                "archived": st.archived, "error": st.error,
+            } for st in rt_statuses
         ], indent=2))
     else:
         print(render_table(
             ["ID", "HF REPO", "FILES", "MATCHED", "TO FETCH", "GATED", "DEST", "NOTE"],
             table, "lllrrlll"))
+        extras = render_extras(models, runtimes, rt_by_id, wf_sizes)
+        if extras:
+            print("\n" + extras)
 
     total_matched = sum(s.matched_bytes for s in statuses)
     total_missing = sum(r["missing"] for r in rows)
+    # Release assets are the only runtime bytes known ahead; git history is not.
+    rt_missing = sum(st.asset_bytes for st in rt_statuses if not st.archived)
     oversized = [r for r in rows
                  if r["status"].matched_bytes >= large_bytes and r["missing"] > 0]
     gated_skips = [r for r in rows if r["status"].gated and not have_token]
@@ -955,6 +1878,13 @@ def cmd_plan(models: list[Model], args, defaults: dict, dest: Path | None,
     if broken:
         log.error("%d repo(s) could not be resolved: %s",
                   len(broken), ", ".join(r["model"].id for r in broken))
+    if rt_statuses:
+        log.info("%d runtime(s), %d already archived; %s of release assets to fetch "
+                 "plus git history", len(rt_statuses),
+                 sum(1 for st in rt_statuses if st.archived), human(rt_missing))
+    for st in rt_statuses:
+        if st.error:
+            log.error("runtime %s: %s", st.runtime.id, st.error)
     if oversized:
         log.warning("%d repo(s) are >= %s each: %s",
                     len(oversized), human(large_bytes),
@@ -990,9 +1920,10 @@ def cmd_plan(models: list[Model], args, defaults: dict, dest: Path | None,
         return 3, False
 
     budget = free - min_free_gb * 1e9
-    if total_missing > budget and not args.ignore_space:
+    if total_missing + rt_missing > budget and not args.ignore_space:
         log.error("plan needs %s but only %s is usable (%s free minus %s headroom)",
-                  human(total_missing), human(budget), human(free), human(min_free_gb * 1e9))
+                  human(total_missing + rt_missing), human(budget), human(free),
+                  human(min_free_gb * 1e9))
         log.error("narrow the selection, use a bigger drive, or pass --ignore-space")
         return 2, False
 
@@ -1006,21 +1937,53 @@ def cmd_plan(models: list[Model], args, defaults: dict, dest: Path | None,
     log.info("using %s with %d parallel repo(s), %d file worker(s) each",
              hf_bin, jobs, max_workers)
 
+    # Runtimes first: they are small, and a long model run may be interrupted.
+    for st in rt_statuses:
+        if not st.archived and not st.error:
+            log.info("runtime %s: archiving %s at %s", st.runtime.id, st.runtime.git,
+                     st.runtime.ref)
+    with cf.ThreadPoolExecutor(max_workers=max(1, min(4, len(rt_statuses)))) as ex:
+        rt_results = list(ex.map(lambda st: archive_runtime(st, dest), rt_statuses))
+    for res in rt_results:
+        if res.status == "failed":
+            log.error("runtime %s: FAILED — %s", res.runtime.id, res.message)
+        else:
+            log.info("runtime %s: %s (%s)", res.runtime.id, res.status, res.commit)
+    if rt_results:
+        manifest_write(dest, runtime_records(rt_results, dest))
+
     results = download_many(
         [r["status"] for r in to_run], dest, hf_bin, jobs, max_workers, have_token)
 
-    mpath = manifest_append(dest, results, {s.model.id: s for s in statuses})
+    commits = {mid: rec.get("commit")
+               for mid, rec in latest_records(manifest_read(dest), "model").items()}
+    commits.update({r.model.id: r.commit for r in results})
+    good = [r.model for r in results if r.status in GOOD_STATUSES]
+    extras = write_usage_files(good, dest, cat, commits)
+    wf_failed = [(mid, wf) for mid, ex in extras.items() for wf in ex["workflows"]
+                 if wf.get("error")]
+
+    mpath = manifest_append(dest, results, {s.model.id: s for s in statuses}, extras)
     log.info("manifest updated: %s", mpath)
+    log.info("index written: %s", write_index(dest))
 
     done = sum(1 for r in results if r.status == "downloaded")
     fresh = sum(1 for r in results if r.status == "up-to-date")
     skipped = sum(1 for r in results if r.status == "skipped-gated")
     failed = [r for r in results if r.status == "failed"]
+    rt_failed = [r for r in rt_results if r.status == "failed"]
     log.info("done: %d downloaded, %d already current, %d gated-skipped, %d failed",
              done, fresh, skipped, len(failed))
+    if rt_results or wf_failed:
+        log.info("runtimes: %d archived or current, %d failed; workflows: %d failed",
+                 len(rt_results) - len(rt_failed), len(rt_failed), len(wf_failed))
     for r in failed:
         log.error("  %s: %s", r.model.id, r.message)
-    return (1 if failed else 0), True
+    for r in rt_failed:
+        log.error("  runtime %s: %s", r.runtime.id, r.message)
+    for mid, wf in wf_failed:
+        log.error("  %s: workflow %s: %s", mid, wf["name"], wf["error"])
+    return (1 if failed or rt_failed or wf_failed else 0), True
 
 
 def cmd_refresh_sizes(cat: Catalog, models: list[Model], args) -> int:
@@ -1037,22 +2000,42 @@ def cmd_refresh_sizes(cat: Catalog, models: list[Model], args) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = build_parser().parse_args(argv)
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    if args.minimal and not args.init:
+        parser.error("--minimal only applies to --init")
+    if args.fast and not args.check:
+        parser.error("--fast only applies to --check")
     if args.init:
-        return write_starter_config(Path(args.config).expanduser())
+        return write_starter_config(Path(args.config or DEFAULT_CONFIG).expanduser(),
+                                    minimal=args.minimal)
 
     log_path = setup_logging(args.verbose)
     log.debug("argv: %s", argv if argv is not None else sys.argv[1:])
 
+    if args.check:
+        # Needs only the drive: no config, no network.
+        if not args.dest or not Path(args.dest).expanduser().is_dir():
+            log.error("--check needs an existing --dest (or $%s)", DEST_ENV)
+            return 2
+        return cmd_check(Path(args.dest).expanduser(), args.fast, args.json)
+
+    config_path, notice = resolve_config(args.config)
+    if notice:
+        log.info("%s", notice)
     try:
-        cat = load_catalog(Path(args.config).expanduser())
+        cat = load_catalog(config_path)
+        only = csv_list(args.only)
         models = cat.select(
             profile=args.profile,
-            only=csv_list(args.only),
+            only=only,
             exclude=csv_list(args.exclude),
             enable=csv_list(args.enable),
             categories=csv_list(args.category),
         )
+        # --only/--category narrow to named models, so profile tags stop applying.
+        runtimes = [] if args.no_runtimes else cat.select_runtimes(
+            models, args.profile, by_tags=not (only or args.category))
     except CatalogError as exc:
         log.error("%s", exc)
         return 2
@@ -1062,7 +2045,7 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     if args.list:
-        return cmd_list(cat, models, args)
+        return cmd_list(cat, models, runtimes, args)
     if args.refresh_sizes:
         return cmd_refresh_sizes(cat, models, args)
     if args.verify_only:
@@ -1074,7 +2057,7 @@ def main(argv: list[str] | None = None) -> int:
     forced_dry = bool(dest_problems)
 
     rc, downloaded = cmd_plan(
-        models, args, cat.defaults, dest, dest_problems, forced_dry, fatal_dest)
+        cat, models, runtimes, args, dest, dest_problems, forced_dry, fatal_dest)
 
     # Only touch the drive when downloads actually ran: a refused run (too
     # large, no room, bad destination) must leave it exactly as it was.
