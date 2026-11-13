@@ -1,0 +1,1093 @@
+#!/usr/bin/env -S uv run --script
+# /// script
+# requires-python = ">=3.11"
+# dependencies = ["huggingface_hub>=0.34", "PyYAML>=6.0"]
+# ///
+"""hfarchive: archive a YAML-defined set of Hugging Face models onto a drive.
+
+Transfers are delegated to the official `hf download` CLI (resume, integrity
+checks, Xet). This script adds the layer around it: the config, profiles,
+size accounting, safety guards and an append-only manifest on the drive.
+"""
+
+from __future__ import annotations
+
+import argparse
+import concurrent.futures as cf
+import json
+import logging
+import os
+import platform
+import re
+import shutil
+import subprocess
+import sys
+import threading
+import time
+from dataclasses import dataclass, field
+from pathlib import Path
+
+import yaml
+from huggingface_hub import HfApi, get_token
+from huggingface_hub.utils import (
+    EntryNotFoundError,
+    GatedRepoError,
+    RepositoryNotFoundError,
+    filter_repo_objects,
+)
+
+__version__ = "1.0.0"
+
+DEFAULT_CONFIG = "models.yaml"
+DEST_ENV = "HFARCHIVE_DEST"
+HF_BIN_ENV = "HFARCHIVE_HF_BIN"
+BOOKKEEPING_DIR = "_hfarchive"
+MANIFEST_NAME = "manifest.jsonl"
+
+DEFAULTS = {
+    "min_free_gb": 50,
+    "large_repo_gb": 100,
+    "jobs": 2,
+    "max_workers_per_repo": 8,
+}
+
+log = logging.getLogger("hfarchive")
+
+
+# =================================================================== config
+class CatalogError(Exception):
+    """Raised when the YAML config is malformed or a selection is impossible."""
+
+
+@dataclass
+class Model:
+    id: str
+    hf_repo: str
+    category: str
+    revision: str | None = None
+    include: list[str] = field(default_factory=list)
+    exclude: list[str] = field(default_factory=list)
+    tags: list[str] = field(default_factory=list)
+    license: str | None = None
+    gated: bool = False
+    approx_bytes: int = 0
+    enabled: bool = True
+    notes: str | None = None
+
+    @property
+    def org(self) -> str:
+        return self.hf_repo.split("/", 1)[0]
+
+    @property
+    def name(self) -> str:
+        return self.hf_repo.split("/", 1)[1]
+
+    def dest_dir(self, dest: Path) -> Path:
+        """Layout on the drive: $DEST/<category>/<repo_org>/<repo_name>/."""
+        return Path(dest) / self.category / self.org / self.name
+
+
+@dataclass
+class Profile:
+    name: str
+    description: str = ""
+    any_tags: list[str] = field(default_factory=list)
+    all_tags: list[str] = field(default_factory=list)
+    ids: list[str] = field(default_factory=list)
+    all: bool = False
+    include_disabled: bool = False
+
+    def matches(self, m: Model) -> bool:
+        if self.all:
+            return True
+        if m.id in self.ids:
+            return True
+        tags = set(m.tags)
+        if self.all_tags and tags.issuperset(self.all_tags):
+            return True
+        if self.any_tags and tags & set(self.any_tags):
+            return True
+        return False
+
+
+# Used when neither --profile nor `default_profile` names one.
+ALL_ENABLED = Profile(name="(all enabled)", description="every enabled entry", all=True)
+
+
+@dataclass
+class Catalog:
+    path: Path
+    defaults: dict
+    profiles: dict[str, Profile]
+    models: list[Model]
+    default_profile: str | None = None
+
+    def by_id(self, model_id: str) -> Model:
+        for m in self.models:
+            if m.id == model_id:
+                return m
+        raise CatalogError(f"unknown model id: {model_id}")
+
+    def profile(self, name: str | None) -> Profile:
+        """Resolve a profile name; None means `default_profile`, else all enabled."""
+        name = name or self.default_profile
+        if name is None:
+            return ALL_ENABLED
+        if name not in self.profiles:
+            available = ", ".join(sorted(self.profiles)) or "(none defined)"
+            raise CatalogError(f"unknown profile {name!r}; available: {available}")
+        return self.profiles[name]
+
+    def select(
+        self,
+        profile: str | None = None,
+        only: list[str] | None = None,
+        exclude: list[str] | None = None,
+        enable: list[str] | None = None,
+        categories: list[str] | None = None,
+    ) -> list[Model]:
+        prof = self.profile(profile)
+        forced = set(enable or [])
+        for fid in forced:
+            self.by_id(fid)  # validate early
+
+        picked: list[Model] = []
+        for m in self.models:
+            if m.id in forced:
+                picked.append(m)
+                continue
+            if not prof.matches(m):
+                continue
+            if not m.enabled and not prof.include_disabled:
+                continue
+            picked.append(m)
+
+        if only:
+            wanted = set(only)
+            for oid in wanted:
+                self.by_id(oid)
+            # --only may name models the profile did not select; honour it.
+            picked = [m for m in self.models if m.id in wanted]
+        if exclude:
+            for eid in exclude:
+                self.by_id(eid)
+            picked = [m for m in picked if m.id not in set(exclude)]
+        if categories:
+            picked = [m for m in picked if m.category in set(categories)]
+        return picked
+
+
+def load_catalog(path: str | Path) -> Catalog:
+    path = Path(path)
+    if not path.is_file():
+        raise CatalogError(f"config not found: {path} (create one with --init)")
+    try:
+        raw = yaml.safe_load(path.read_text()) or {}
+    except yaml.YAMLError as exc:
+        raise CatalogError(f"{path} is not valid YAML: {exc}") from exc
+    if not isinstance(raw, dict):
+        raise CatalogError(f"{path} must be a YAML mapping")
+
+    defaults = dict(DEFAULTS)
+    defaults.update(raw.get("defaults") or {})
+
+    profiles: dict[str, Profile] = {}
+    for name, body in (raw.get("profiles") or {}).items():
+        body = body or {}
+        unknown = set(body) - {
+            "description", "any_tags", "all_tags", "ids", "all", "include_disabled",
+        }
+        if unknown:
+            raise CatalogError(f"profile {name!r} has unknown keys: {sorted(unknown)}")
+        profiles[name] = Profile(name=name, **body)
+
+    default_profile = raw.get("default_profile")
+    if default_profile is not None and default_profile not in profiles:
+        raise CatalogError(f"default_profile {default_profile!r} is not a defined profile")
+
+    models: list[Model] = []
+    seen: set[str] = set()
+    known = set(Model.__dataclass_fields__)
+    for entry in raw.get("models") or []:
+        unknown = set(entry) - known
+        if unknown:
+            raise CatalogError(f"model {entry.get('id')!r} has unknown keys: {sorted(unknown)}")
+        missing = {"id", "hf_repo", "category"} - set(entry)
+        if missing:
+            raise CatalogError(f"model {entry.get('id')!r} is missing {sorted(missing)}")
+        m = Model(**entry)
+        if m.id in seen:
+            raise CatalogError(f"duplicate model id: {m.id}")
+        if "/" not in m.hf_repo:
+            raise CatalogError(f"{m.id}: hf_repo must be 'org/name', got {m.hf_repo!r}")
+        seen.add(m.id)
+        models.append(m)
+    if not models:
+        raise CatalogError("config defines no models")
+
+    return Catalog(path=path, defaults=defaults, profiles=profiles, models=models,
+                   default_profile=default_profile)
+
+
+_ID_LINE = re.compile(r"^\s*-\s+id:\s*(\S+)\s*$")
+_SIZE_LINE = re.compile(r"^(\s*)approx_bytes:\s*\d+\s*$")
+
+
+def write_approx_bytes(path: str | Path, sizes: dict[str, int]) -> int:
+    """Rewrite `approx_bytes:` in place, preserving comments and formatting.
+
+    Returns the number of entries updated.
+    """
+    path = Path(path)
+    lines = path.read_text().splitlines(keepends=True)
+    current: str | None = None
+    updated = 0
+    for i, line in enumerate(lines):
+        m = _ID_LINE.match(line)
+        if m:
+            current = m.group(1)
+            continue
+        s = _SIZE_LINE.match(line)
+        if s and current in sizes:
+            new = f"{s.group(1)}approx_bytes: {sizes[current]}\n"
+            if new != line:
+                updated += 1
+            lines[i] = new
+    path.write_text("".join(lines))
+    return updated
+
+
+STARTER_CONFIG = """\
+# hfarchive config
+#
+# Lists the Hugging Face models to archive. Run `hfarchive --list` to see what
+# this file selects, `hfarchive --dry-run --dest /path/to/drive` to plan, and
+# drop --dry-run to download. Sizes can be measured with --refresh-sizes.
+#
+# Fields per entry (only id, hf_repo and category are required):
+#   id           stable local name, used by --only / --exclude / --enable
+#   hf_repo      Hub repo id, exact casing: org/name
+#   revision     git branch, tag or commit; default: main
+#   include      glob list; if set, ONLY matching files are downloaded
+#   exclude      glob list, applied after include
+#   category     top-level folder on the destination
+#   tags         free-form labels that profiles select on
+#   license      informational
+#   gated        true if the repo needs accepted terms and an HF token
+#   approx_bytes size of the matched files (written by --refresh-sizes)
+#   enabled      false = skipped unless a profile opts in or --enable is used
+#   notes        free text
+#
+# Globs follow the Hub's fnmatch rules: `*` also crosses `/`, so
+# `*.safetensors` matches `transformer/x.safetensors` too.
+
+defaults:
+  min_free_gb: 50          # refuse to download with less free space than this
+  large_repo_gb: 100       # entries at or above this need --allow-large
+  jobs: 2                  # repos downloaded in parallel
+  max_workers_per_repo: 8  # files in parallel within one repo
+
+# Profile used when --profile is not given. Without it, every enabled entry
+# is selected.
+# default_profile: embeddings
+
+profiles:
+  embeddings:
+    description: Embedding models only.
+    any_tags: [embeddings]
+  everything:
+    description: Every entry, including disabled ones.
+    all: true
+    include_disabled: true
+
+models:
+  - id: qwen3-embedding-0.6b
+    hf_repo: Qwen/Qwen3-Embedding-0.6B
+    category: embeddings
+    tags: [embeddings]
+    license: apache-2.0
+    gated: false
+    approx_bytes: 1207489041
+    enabled: true
+
+  - id: whisper-large-v3-turbo
+    hf_repo: openai/whisper-large-v3-turbo
+    category: asr
+    tags: [speech]
+    license: mit
+    gated: false
+    approx_bytes: 1622466054
+    enabled: true
+
+  # GGUF repos ship every quantization; `include` keeps just one.
+  - id: qwen2.5-coder-7b-gguf
+    hf_repo: Qwen/Qwen2.5-Coder-7B-Instruct-GGUF
+    include:
+      - "*-q4_k_m.gguf"
+      - README.md
+    category: coding
+    tags: [coding, gguf]
+    license: apache-2.0
+    gated: false
+    approx_bytes: 4683079206
+    enabled: false
+    notes: Disabled; pull it in with --enable qwen2.5-coder-7b-gguf.
+"""
+
+
+def write_starter_config(path: Path) -> int:
+    if path.exists():
+        print(f"error: {path} already exists; refusing to overwrite it", file=sys.stderr)
+        return 2
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(STARTER_CONFIG)
+    print(f"wrote {path}; edit it, then run: hfarchive --config {path} --list")
+    return 0
+
+
+# ====================================================================== hub
+def token_available() -> bool:
+    """True if an HF token is reachable (HF_TOKEN env or `hf auth login`).
+
+    The token itself is never returned, logged or printed.
+    """
+    try:
+        return bool(get_token())
+    except Exception:
+        return False
+
+
+@dataclass
+class RepoStatus:
+    model: Model
+    exists: bool = False
+    gated: bool = False
+    commit: str | None = None
+    files: list[tuple[str, int]] = field(default_factory=list)
+    total_repo_bytes: int = 0
+    error: str | None = None
+
+    @property
+    def matched_files(self) -> int:
+        return len(self.files)
+
+    @property
+    def matched_bytes(self) -> int:
+        return sum(size for _, size in self.files)
+
+    def local_state(self, dest: Path) -> tuple[int, int]:
+        """(bytes already present and complete, bytes still missing).
+
+        A file counts as complete when it exists locally with the exact size
+        the Hub reports, which is what `hf download` itself uses to skip work.
+        """
+        here = missing = 0
+        root = self.model.dest_dir(dest)
+        for rel, size in self.files:
+            p = root / rel
+            try:
+                if p.is_file() and p.stat().st_size == size:
+                    here += size
+                    continue
+            except OSError:
+                pass
+            missing += size
+        return here, missing
+
+
+def _match(model: Model, names: list[str]) -> list[str]:
+    return list(
+        filter_repo_objects(
+            names,
+            allow_patterns=model.include or None,
+            ignore_patterns=model.exclude or None,
+        )
+    )
+
+
+def probe(model: Model, api: HfApi | None = None) -> RepoStatus:
+    """Resolve one repo against the Hub. Never raises."""
+    api = api or HfApi()
+    st = RepoStatus(model=model)
+    try:
+        info = api.model_info(model.hf_repo, revision=model.revision, files_metadata=True)
+    except RepositoryNotFoundError:
+        st.error = "repo not found (or private)"
+        return st
+    except GatedRepoError:
+        # Metadata itself is gated: we know it exists but cannot size it.
+        st.exists = True
+        st.gated = True
+        st.error = "gated: metadata requires an accepted licence + token"
+        return st
+    except EntryNotFoundError:
+        st.error = f"revision not found: {model.revision}"
+        return st
+    except Exception as exc:  # network, rate limit, ...
+        st.error = f"{type(exc).__name__}: {exc}"
+        return st
+
+    st.exists = True
+    st.gated = bool(info.gated)
+    st.commit = info.sha
+    sizes = {s.rfilename: (s.size or 0) for s in info.siblings}
+    st.total_repo_bytes = sum(sizes.values())
+    st.files = [(n, sizes[n]) for n in _match(model, list(sizes))]
+    if not st.files:
+        st.error = "include/exclude globs matched no files"
+    return st
+
+
+def probe_all(models: list[Model], workers: int = 8) -> list[RepoStatus]:
+    """Probe repos concurrently, preserving input order."""
+    if not models:
+        return []
+    api = HfApi()
+    with cf.ThreadPoolExecutor(max_workers=max(1, min(workers, len(models)))) as ex:
+        return list(ex.map(lambda m: probe(m, api), models))
+
+
+# ================================================================= download
+def resolve_hf_bin() -> str | None:
+    """Locate the `hf` CLI: this interpreter's environment, then $HFARCHIVE_HF_BIN, then PATH.
+
+    The sibling of sys.executable comes first so the CLI matches the
+    huggingface_hub version used to resolve metadata.
+    """
+    sibling = Path(sys.executable).parent / "hf"
+    if sibling.exists():
+        return str(sibling)
+    explicit = os.environ.get(HF_BIN_ENV)
+    if explicit:
+        return explicit if Path(explicit).exists() else None
+    return shutil.which("hf")
+
+
+@dataclass
+class DownloadResult:
+    model: Model
+    status: str  # downloaded | skipped-gated | failed | up-to-date
+    bytes_expected: int = 0
+    commit: str | None = None
+    message: str = ""
+    returncode: int | None = None
+
+
+def build_command(model: Model, dest: Path, hf_bin: str, max_workers: int) -> list[str]:
+    cmd = [hf_bin, "download", model.hf_repo, "--local-dir", str(model.dest_dir(dest))]
+    if model.revision:
+        cmd += ["--revision", model.revision]
+    for pat in model.include:
+        cmd += ["--include", pat]
+    for pat in model.exclude:
+        cmd += ["--exclude", pat]
+    cmd += ["--max-workers", str(max_workers)]
+    return cmd
+
+
+def download_one(
+    st: RepoStatus,
+    dest: Path,
+    hf_bin: str,
+    max_workers: int,
+    have_token: bool,
+    print_lock: threading.Lock,
+) -> DownloadResult:
+    m = st.model
+    if not st.exists:
+        return DownloadResult(m, "failed", message=st.error or "repo unavailable")
+    if st.gated and not have_token:
+        return DownloadResult(
+            m,
+            "skipped-gated",
+            message="gated repo and no HF token found; run `hf auth login` and accept "
+            f"the licence at https://huggingface.co/{m.hf_repo}",
+        )
+
+    here, missing = st.local_state(dest)
+    if st.files and missing == 0:
+        log.info("%s: already complete (%s)", m.id, human(here))
+        return DownloadResult(m, "up-to-date", bytes_expected=0, commit=st.commit)
+
+    target = m.dest_dir(dest)
+    target.mkdir(parents=True, exist_ok=True)
+    cmd = build_command(m, dest, hf_bin, max_workers)
+    with print_lock:
+        log.info("%s -> %s (%s to fetch, %s already there)",
+                 m.id, target, human(missing), human(here))
+        log.debug("exec: %s", " ".join(cmd))
+
+    # `hf download` resumes partial files and skips complete ones by itself.
+    proc = subprocess.run(cmd, capture_output=True, text=True)
+    if proc.returncode != 0:
+        tail = (proc.stderr or proc.stdout or "").strip().splitlines()[-5:]
+        return DownloadResult(
+            m, "failed",
+            bytes_expected=missing,
+            commit=st.commit,
+            message=" | ".join(tail) or f"hf download exited {proc.returncode}",
+            returncode=proc.returncode,
+        )
+    return DownloadResult(m, "downloaded", bytes_expected=missing, commit=st.commit)
+
+
+def download_many(
+    statuses: list[RepoStatus],
+    dest: Path,
+    hf_bin: str,
+    jobs: int,
+    max_workers: int,
+    have_token: bool,
+) -> list[DownloadResult]:
+    lock = threading.Lock()
+    results: list[DownloadResult] = []
+    if not statuses:
+        return results
+    with cf.ThreadPoolExecutor(max_workers=max(1, jobs)) as ex:
+        futures = {
+            ex.submit(download_one, st, dest, hf_bin, max_workers, have_token, lock): st
+            for st in statuses
+        }
+        for fut in cf.as_completed(futures):
+            st = futures[fut]
+            try:
+                res = fut.result()
+            except Exception as exc:  # pragma: no cover - defensive
+                res = DownloadResult(st.model, "failed", message=f"{type(exc).__name__}: {exc}")
+            if res.status == "failed":
+                log.error("%s: FAILED — %s", res.model.id, res.message)
+            elif res.status == "skipped-gated":
+                log.warning("%s: skipped (gated) — %s", res.model.id, res.message)
+            else:
+                log.info("%s: %s", res.model.id, res.status)
+            results.append(res)
+    order = {st.model.id: i for i, st in enumerate(statuses)}
+    results.sort(key=lambda r: order[r.model.id])
+    return results
+
+
+def human(n: float) -> str:
+    """Bytes as a decimal-unit string (drive vendors and the Hub both use GB=1e9)."""
+    for unit in ("B", "KB", "MB", "GB", "TB"):
+        if abs(n) < 1000 or unit == "TB":
+            return f"{n:.0f} {unit}" if unit == "B" else f"{n:.2f} {unit}"
+        n /= 1000.0
+    return f"{n:.2f} TB"
+
+
+# ================================================================= manifest
+def bookkeeping_dir(dest: Path) -> Path:
+    """Manifest and logs live in $DEST/_hfarchive/, next to the category folders."""
+    return Path(dest) / BOOKKEEPING_DIR
+
+
+def manifest_append(dest: Path, results: list[DownloadResult],
+                    statuses: dict[str, RepoStatus]) -> Path:
+    d = bookkeeping_dir(dest)
+    d.mkdir(parents=True, exist_ok=True)
+    path = d / MANIFEST_NAME
+    now = time.strftime("%Y-%m-%dT%H:%M:%S%z")
+    host = platform.node()
+    with path.open("a", encoding="utf-8") as fh:
+        for res in results:
+            m = res.model
+            st = statuses.get(m.id)
+            record = {
+                "timestamp": now,
+                "host": host,
+                "id": m.id,
+                "hf_repo": m.hf_repo,
+                "revision": m.revision,
+                "commit": res.commit,
+                "category": m.category,
+                "status": res.status,
+                "dest": str(m.dest_dir(dest)),
+                "rel_dest": os.path.relpath(m.dest_dir(dest), dest),
+                "files": st.matched_files if st else None,
+                "bytes_matched": st.matched_bytes if st else None,
+                "bytes_transferred_estimate": res.bytes_expected,
+                "license": m.license,
+                "gated": m.gated,
+                "message": res.message or None,
+            }
+            fh.write(json.dumps(record, ensure_ascii=False) + "\n")
+    return path
+
+
+def manifest_read(dest: Path) -> list[dict]:
+    path = bookkeeping_dir(dest) / MANIFEST_NAME
+    if not path.is_file():
+        return []
+    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()
+            if line.strip()]
+
+
+# ====================================================================== cli
+def build_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(
+        prog="hfarchive",
+        description="Archive a YAML-defined set of Hugging Face models onto a drive.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "examples:\n"
+            "  hfarchive --init\n"
+            "  hfarchive --list\n"
+            "  hfarchive --verify-only --config examples/tweet-2026-09.yaml\n"
+            "  hfarchive --dry-run --dest /mnt/backup\n"
+            "  hfarchive --dest /mnt/backup --profile embeddings\n"
+            "  hfarchive --dest /mnt/backup --allow-large\n"
+        ),
+    )
+    p.add_argument("--version", action="version", version=f"hfarchive {__version__}")
+    p.add_argument("--config", default=DEFAULT_CONFIG,
+                   help=f"path to the YAML config (default: ./{DEFAULT_CONFIG})")
+    p.add_argument("--profile", default=None,
+                   help="profile to resolve (default: the config's default_profile, "
+                        "else every enabled entry)")
+    p.add_argument("--dest", default=os.environ.get(DEST_ENV),
+                   help=f"destination root, e.g. /mnt/backup (env: {DEST_ENV})")
+
+    mode = p.add_argument_group("modes")
+    mode.add_argument("--init", action="store_true",
+                      help="write a commented starter config at --config and exit")
+    mode.add_argument("--list", action="store_true", help="print the resolved selection, no network")
+    mode.add_argument("--verify-only", action="store_true",
+                      help="check every repo exists on the Hub, download nothing")
+    mode.add_argument("--dry-run", action="store_true",
+                      help="resolve sizes and target paths, write nothing")
+    mode.add_argument("--refresh-sizes", action="store_true",
+                      help="write measured approx_bytes back into the config")
+
+    sel = p.add_argument_group("selection")
+    sel.add_argument("--only", default="", help="comma-separated model ids to use instead of the profile")
+    sel.add_argument("--exclude", default="", help="comma-separated model ids to drop")
+    sel.add_argument("--enable", default="", help="comma-separated ids to force in even if disabled")
+    sel.add_argument("--category", default="", help="comma-separated categories to keep")
+
+    beh = p.add_argument_group("download behaviour")
+    beh.add_argument("--jobs", type=int, default=None, help="repos downloaded in parallel")
+    beh.add_argument("--max-workers", type=int, default=None, help="files in parallel per repo")
+    beh.add_argument("--allow-large", "--i-know", dest="allow_large", action="store_true",
+                     help="permit entries at or above the large-repo threshold")
+    beh.add_argument("--large-repo-gb", type=float, default=None,
+                     help="large-repo threshold in GB (default from config)")
+    beh.add_argument("--min-free-gb", type=float, default=None,
+                     help="required free headroom on the destination")
+    beh.add_argument("--ignore-space", action="store_true",
+                     help="proceed even if the plan does not fit in the free space")
+    beh.add_argument("--allow-home-dest", action="store_true",
+                     help="allow a destination inside $HOME or on its filesystem "
+                          "(normally refused)")
+
+    out = p.add_argument_group("output")
+    out.add_argument("--json", action="store_true", help="machine-readable output")
+    out.add_argument("--verbose", "-v", action="store_true", help="debug logging")
+    return p
+
+
+def csv_list(value: str) -> list[str]:
+    return [v.strip() for v in value.split(",") if v.strip()]
+
+
+def log_dir() -> Path:
+    state = os.environ.get("XDG_STATE_HOME") or str(Path.home() / ".local" / "state")
+    return Path(state) / "hfarchive" / "logs"
+
+
+def setup_logging(verbose: bool) -> Path:
+    directory = log_dir()
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / f"hfarchive-{time.strftime('%Y%m%d-%H%M%S')}.log"
+    log.setLevel(logging.DEBUG)
+    for handler in log.handlers:
+        handler.close()
+    log.handlers.clear()
+
+    fh = logging.FileHandler(path, encoding="utf-8")
+    fh.setLevel(logging.DEBUG)
+    fh.setFormatter(logging.Formatter("%(asctime)s %(levelname)-7s %(message)s"))
+    log.addHandler(fh)
+
+    ch = logging.StreamHandler(sys.stderr)
+    ch.setLevel(logging.DEBUG if verbose else logging.INFO)
+    ch.setFormatter(logging.Formatter("%(message)s"))
+    log.addHandler(ch)
+    return path
+
+
+def render_table(headers: list[str], rows: list[list[str]], aligns: str = "") -> str:
+    if not rows:
+        return "(nothing selected)"
+    widths = [len(h) for h in headers]
+    for row in rows:
+        for i, cell in enumerate(row):
+            widths[i] = max(widths[i], len(cell))
+    aligns = (aligns + "l" * len(headers))[: len(headers)]
+
+    def fmt(cells: list[str]) -> str:
+        parts = []
+        for cell, w, a in zip(cells, widths, aligns):
+            parts.append(cell.rjust(w) if a == "r" else cell.ljust(w))
+        return "  ".join(parts).rstrip()
+
+    sep = "  ".join("-" * w for w in widths)
+    return "\n".join([fmt(headers), sep] + [fmt(r) for r in rows])
+
+
+def flag_str(m: Model) -> str:
+    bits = []
+    if m.gated:
+        bits.append("gated")
+    if not m.enabled:
+        bits.append("off")
+    if m.include or m.exclude:
+        bits.append("globs")
+    return ",".join(bits) or "-"
+
+
+def cmd_list(cat: Catalog, models: list[Model], args) -> int:
+    prof = cat.profile(args.profile)
+    if args.json:
+        print(json.dumps(
+            {
+                "profile": prof.name,
+                "description": prof.description.strip(),
+                "count": len(models),
+                "models": [
+                    {
+                        "id": m.id, "hf_repo": m.hf_repo, "category": m.category,
+                        "tags": m.tags, "license": m.license, "gated": m.gated,
+                        "approx_bytes": m.approx_bytes, "enabled": m.enabled,
+                        "include": m.include, "exclude": m.exclude, "notes": m.notes,
+                    }
+                    for m in models
+                ],
+            },
+            indent=2,
+        ))
+        return 0
+
+    print(f"profile: {prof.name} — {prof.description.strip() or '(no description)'}")
+    print(f"config: {cat.path}\n")
+    rows = [
+        [m.id, m.hf_repo, m.category,
+         human(m.approx_bytes) if m.approx_bytes else "?",
+         m.license or "?", flag_str(m)]
+        for m in models
+    ]
+    print(render_table(
+        ["ID", "HF REPO", "CATEGORY", "APPROX", "LICENSE", "FLAGS"], rows, "lllrll"))
+    known = sum(m.approx_bytes for m in models)
+    unknown = sum(1 for m in models if not m.approx_bytes)
+    print(f"\n{len(models)} models, approx {human(known)}"
+          + (f" (+{unknown} unmeasured; run --refresh-sizes)" if unknown else ""))
+    return 0
+
+
+def cmd_verify(models: list[Model], args) -> int:
+    log.info("checking %d repos against the Hub...", len(models))
+    statuses = probe_all(models)
+    ok = [s for s in statuses if s.exists and not s.error]
+    gated_ok = [s for s in statuses if s.exists and s.gated]
+    bad = [s for s in statuses if not s.exists or s.error]
+
+    if args.json:
+        print(json.dumps([
+            {
+                "id": s.model.id, "hf_repo": s.model.hf_repo, "exists": s.exists,
+                "gated": s.gated, "commit": s.commit, "files": s.matched_files,
+                "bytes": s.matched_bytes, "repo_bytes": s.total_repo_bytes,
+                "error": s.error,
+            } for s in statuses
+        ], indent=2))
+    else:
+        rows = []
+        for s in statuses:
+            if not s.exists:
+                verdict = "MISSING"
+            elif s.error:
+                verdict = "WARN"
+            elif s.gated:
+                verdict = "OK (gated)"
+            else:
+                verdict = "OK"
+            rows.append([
+                s.model.id, s.model.hf_repo, verdict,
+                (s.commit or "")[:8],
+                str(s.matched_files) if s.exists else "-",
+                human(s.matched_bytes) if s.matched_files else "-",
+                s.error or "",
+            ])
+        print(render_table(
+            ["ID", "HF REPO", "STATUS", "COMMIT", "FILES", "MATCHED", "NOTE"],
+            rows, "llllrrl"))
+        print(f"\n{len(ok)} ok, {len(gated_ok)} gated, {len(bad)} problematic "
+              f"({len(statuses)} checked)")
+    return 1 if any(not s.exists for s in statuses) else 0
+
+
+def on_home_filesystem(path: Path) -> bool:
+    """True if `path` is inside $HOME or on the same filesystem as it."""
+    home = Path.home()
+    resolved = path.resolve()
+    if resolved == home or home in resolved.parents:
+        return True
+    try:
+        return os.stat(resolved).st_dev == os.stat(home).st_dev
+    except OSError:
+        return False
+
+
+def resolve_dest(args) -> tuple[Path | None, list[str], bool]:
+    """Return (dest, problems, fatal).
+
+    `fatal` separates "the drive is not plugged in yet", which degrades to a
+    dry run because planning ahead is useful, from "this destination is wrong",
+    which must fail loudly rather than quietly downloading nothing.
+    """
+    if not args.dest:
+        return None, [f"no destination given (--dest or ${DEST_ENV})"], False
+    dest = Path(args.dest).expanduser()
+    if not dest.exists():
+        return dest, [f"destination does not exist: {dest}"], False
+
+    problems: list[str] = []
+    if not dest.is_dir():
+        return dest, [f"destination is not a directory: {dest}"], True
+    if not args.allow_home_dest and on_home_filesystem(dest):
+        problems.append(
+            f"destination {dest.resolve()} is on the same filesystem as {Path.home()}; "
+            "hfarchive is meant for a separate drive. Use --allow-home-dest to override."
+        )
+    if not os.access(dest, os.W_OK):
+        problems.append(f"destination is not writable: {dest}")
+    return dest, problems, bool(problems)
+
+
+def plan_rows(statuses: list[RepoStatus], dest: Path | None) -> list[dict]:
+    rows = []
+    for s in statuses:
+        here = missing = 0
+        if dest is not None and s.files:
+            here, missing = s.local_state(dest)
+        elif s.files:
+            missing = s.matched_bytes
+        rows.append({"status": s, "model": s.model, "present": here, "missing": missing})
+    return rows
+
+
+def cmd_plan(models: list[Model], args, defaults: dict, dest: Path | None,
+             dest_problems: list[str], forced_dry: bool,
+             fatal_dest: bool) -> tuple[int, bool]:
+    """Shared path for --dry-run and the real download.
+
+    Returns (exit code, whether any download was actually attempted). Nothing is
+    written to the destination unless that second value is True.
+    """
+    large_gb = args.large_repo_gb if args.large_repo_gb is not None else defaults["large_repo_gb"]
+    min_free_gb = args.min_free_gb if args.min_free_gb is not None else defaults["min_free_gb"]
+    large_bytes = large_gb * 1e9
+
+    log.info("resolving %d repos against the Hub...", len(models))
+    statuses = probe_all(models)
+    rows = plan_rows(statuses, dest)
+
+    have_token = token_available()
+    dry = args.dry_run or forced_dry
+
+    table = []
+    for r in rows:
+        s: RepoStatus = r["status"]
+        m: Model = r["model"]
+        if not s.exists:
+            note = s.error or "unavailable"
+        elif s.gated and not have_token:
+            note = "gated: will skip (no token)"
+        elif s.gated:
+            note = "gated: token present"
+        elif s.matched_bytes >= large_bytes and not args.allow_large:
+            note = "large: needs --allow-large"
+        elif r["missing"] == 0 and s.files:
+            note = "already complete"
+        else:
+            note = s.error or ""
+        table.append([
+            m.id, m.hf_repo,
+            str(s.matched_files) if s.exists else "-",
+            human(s.matched_bytes) if s.exists else "-",
+            human(r["missing"]) if s.exists else "-",
+            "yes" if m.gated else "no",
+            str(m.dest_dir(dest)) if dest else f"<DEST>/{m.category}/{m.org}/{m.name}",
+            note,
+        ])
+
+    if args.json:
+        print(json.dumps([
+            {
+                "id": r["model"].id, "hf_repo": r["model"].hf_repo,
+                "exists": r["status"].exists, "gated": r["model"].gated,
+                "files": r["status"].matched_files,
+                "bytes_matched": r["status"].matched_bytes,
+                "bytes_missing": r["missing"], "bytes_present": r["present"],
+                "commit": r["status"].commit,
+                "dest": str(r["model"].dest_dir(dest)) if dest else None,
+            } for r in rows
+        ], indent=2))
+    else:
+        print(render_table(
+            ["ID", "HF REPO", "FILES", "MATCHED", "TO FETCH", "GATED", "DEST", "NOTE"],
+            table, "lllrrlll"))
+
+    total_matched = sum(s.matched_bytes for s in statuses)
+    total_missing = sum(r["missing"] for r in rows)
+    oversized = [r for r in rows
+                 if r["status"].matched_bytes >= large_bytes and r["missing"] > 0]
+    gated_skips = [r for r in rows if r["status"].gated and not have_token]
+    broken = [r for r in rows if not r["status"].exists]
+
+    print()
+    log.info("catalogued %s across %d repos; %s still to fetch",
+             human(total_matched), len(rows), human(total_missing))
+    if gated_skips:
+        log.warning("%d gated repo(s) will be skipped (no HF token): %s",
+                    len(gated_skips), ", ".join(r["model"].id for r in gated_skips))
+        log.warning("  -> run `hf auth login` and accept each licence on the model page")
+    if broken:
+        log.error("%d repo(s) could not be resolved: %s",
+                  len(broken), ", ".join(r["model"].id for r in broken))
+    if oversized:
+        log.warning("%d repo(s) are >= %s each: %s",
+                    len(oversized), human(large_bytes),
+                    ", ".join(r["model"].id for r in oversized))
+
+    if dry:
+        if forced_dry and not args.dry_run:
+            level = log.error if fatal_dest else log.warning
+            level("cannot download: %s", "; ".join(dest_problems))
+        log.info("dry run: nothing was written")
+        return (2 if fatal_dest else 0), False
+
+    # ---- from here on we are actually going to write to the drive ----
+    if dest_problems:
+        for problem in dest_problems:
+            log.error("%s", problem)
+        return 2, False
+
+    assert dest is not None
+    free = shutil.disk_usage(dest).free
+    log.info("destination %s: %s free", dest, human(free))
+    if free < min_free_gb * 1e9:
+        log.error("only %s free, below the %s headroom required (--min-free-gb)",
+                  human(free), human(min_free_gb * 1e9))
+        return 2, False
+
+    to_run = [r for r in rows if r["status"].exists]
+    if oversized and not args.allow_large:
+        blocked = ", ".join(r["model"].id for r in oversized)
+        log.error("refusing to download %d repo(s) of %s or more without --allow-large: %s",
+                  len(oversized), human(large_bytes), blocked)
+        log.error("re-run with --allow-large (alias --i-know), or narrow with --only/--exclude")
+        return 3, False
+
+    budget = free - min_free_gb * 1e9
+    if total_missing > budget and not args.ignore_space:
+        log.error("plan needs %s but only %s is usable (%s free minus %s headroom)",
+                  human(total_missing), human(budget), human(free), human(min_free_gb * 1e9))
+        log.error("narrow the selection, use a bigger drive, or pass --ignore-space")
+        return 2, False
+
+    jobs = args.jobs if args.jobs is not None else defaults["jobs"]
+    max_workers = (args.max_workers if args.max_workers is not None
+                   else defaults["max_workers_per_repo"])
+    hf_bin = resolve_hf_bin()
+    if not hf_bin:
+        log.error("could not find the `hf` CLI; install huggingface_hub or set $%s", HF_BIN_ENV)
+        return 2, False
+    log.info("using %s with %d parallel repo(s), %d file worker(s) each",
+             hf_bin, jobs, max_workers)
+
+    results = download_many(
+        [r["status"] for r in to_run], dest, hf_bin, jobs, max_workers, have_token)
+
+    mpath = manifest_append(dest, results, {s.model.id: s for s in statuses})
+    log.info("manifest updated: %s", mpath)
+
+    done = sum(1 for r in results if r.status == "downloaded")
+    fresh = sum(1 for r in results if r.status == "up-to-date")
+    skipped = sum(1 for r in results if r.status == "skipped-gated")
+    failed = [r for r in results if r.status == "failed"]
+    log.info("done: %d downloaded, %d already current, %d gated-skipped, %d failed",
+             done, fresh, skipped, len(failed))
+    for r in failed:
+        log.error("  %s: %s", r.model.id, r.message)
+    return (1 if failed else 0), True
+
+
+def cmd_refresh_sizes(cat: Catalog, models: list[Model], args) -> int:
+    log.info("measuring %d repos...", len(models))
+    statuses = probe_all(models)
+    sizes = {s.model.id: s.matched_bytes for s in statuses if s.exists and s.files}
+    failed = [s for s in statuses if not s.exists or not s.files]
+    updated = write_approx_bytes(cat.path, sizes)
+    log.info("measured %d repos, updated %d approx_bytes entries in %s",
+             len(sizes), updated, cat.path)
+    for s in failed:
+        log.warning("  %s: %s", s.model.id, s.error or "no files matched")
+    return 1 if failed else 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = build_parser().parse_args(argv)
+    if args.init:
+        return write_starter_config(Path(args.config).expanduser())
+
+    log_path = setup_logging(args.verbose)
+    log.debug("argv: %s", argv if argv is not None else sys.argv[1:])
+
+    try:
+        cat = load_catalog(Path(args.config).expanduser())
+        models = cat.select(
+            profile=args.profile,
+            only=csv_list(args.only),
+            exclude=csv_list(args.exclude),
+            enable=csv_list(args.enable),
+            categories=csv_list(args.category),
+        )
+    except CatalogError as exc:
+        log.error("%s", exc)
+        return 2
+
+    if not models:
+        log.error("the selection is empty (profile %r)", cat.profile(args.profile).name)
+        return 2
+
+    if args.list:
+        return cmd_list(cat, models, args)
+    if args.refresh_sizes:
+        return cmd_refresh_sizes(cat, models, args)
+    if args.verify_only:
+        return cmd_verify(models, args)
+
+    dest, dest_problems, fatal_dest = resolve_dest(args)
+    # An absent destination degrades to a dry run rather than failing: planning
+    # is useful before the drive is plugged in. A *wrong* one is an error.
+    forced_dry = bool(dest_problems)
+
+    rc, downloaded = cmd_plan(
+        models, args, cat.defaults, dest, dest_problems, forced_dry, fatal_dest)
+
+    # Only touch the drive when downloads actually ran: a refused run (too
+    # large, no room, bad destination) must leave it exactly as it was.
+    if downloaded and dest is not None and dest.is_dir():
+        try:
+            logs_on_dest = bookkeeping_dir(dest) / "logs"
+            logs_on_dest.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(log_path, logs_on_dest / log_path.name)
+        except OSError as exc:
+            log.warning("could not copy the log to the drive: %s", exc)
+    log.info("log: %s", log_path)
+    return rc
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

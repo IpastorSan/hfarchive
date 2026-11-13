@@ -1,10 +1,15 @@
-# local-model-backup — model catalog
+# hfarchive example config: the September 2026 open-weights list
 #
-# Every repo id below was verified against the Hugging Face Hub API.
-# `approx_bytes` is the size of the files that the include/exclude globs
+# 52 models from a widely shared September 2026 post listing open-weights
+# models worth keeping a local copy of, plus a few small coding GGUFs that are
+# disabled by default. Every repo id was verified against the Hugging Face Hub
+# API. `approx_bytes` is the size of the files that the include/exclude globs
 # actually match (not the whole repo). Refresh it any time with:
 #
-#     python -m lmb --refresh-sizes
+#     hfarchive --config examples/tweet-2026-09.yaml --refresh-sizes
+#
+# No default_profile is set, so a run without --profile selects every enabled
+# entry (the same 52 models as `tweet`, about 5.9 TB).
 #
 # Fields per entry:
 #   id           stable local name, used by --only / --exclude / --enable
@@ -33,7 +38,7 @@ defaults:
 profiles:
   tweet:
     description: >-
-      DEFAULT. Every model from Dustin Hollywood's tweet. Multiple terabytes:
+      Every model from the September 2026 list. Multiple terabytes:
       the huge FP8/8-bit dumps stay enabled but are gated behind --allow-large.
     any_tags: [tweet]
 
@@ -48,11 +53,11 @@ profiles:
     any_tags: [coding-small]
     include_disabled: true
 
-  current-box:
+  8gb-vram:
     description: >-
-      Fits Ignacio's current box today: RTX 2070 Super 8 GB VRAM + 128 GB DDR5.
+      Runs on an 8 GB VRAM card with plenty of system RAM (~128 GB).
       MoE GGUFs are included because low active-parameter counts run well on CPU.
-    any_tags: [current-box]
+    any_tags: [8gb-vram]
     include_disabled: true
 
   all:
@@ -246,7 +251,7 @@ models:
       - "*UD-Q4_K_XL.gguf"
       - README.md
     category: coding
-    tags: [tweet, gguf, coding, coding-small, current-box]
+    tags: [tweet, gguf, coding, coding-small, 8gb-vram]
     license: apache-2.0
     gated: false
     approx_bytes: 17665342845
@@ -268,7 +273,7 @@ models:
   - id: minicpm5-2b
     hf_repo: openbmb/MiniCPM5-2B
     category: small
-    tags: [tweet, small, current-box]
+    tags: [tweet, small, 8gb-vram]
     license: apache-2.0
     gated: false
     approx_bytes: 5043811638
@@ -277,7 +282,7 @@ models:
   - id: gemma-4-e4b-it
     hf_repo: google/gemma-4-E4B-it
     category: small
-    tags: [tweet, small, current-box]
+    tags: [tweet, small, 8gb-vram]
     license: apache-2.0
     gated: false
     approx_bytes: 16024823729
@@ -291,7 +296,7 @@ models:
       - "*mmproj.gguf"
       - README.md
     category: small
-    tags: [tweet, gguf, small, current-box]
+    tags: [tweet, gguf, small, 8gb-vram]
     license: apache-2.0
     gated: false
     approx_bytes: 2988528030
@@ -331,7 +336,7 @@ models:
     exclude:
       - flux-2-klein-4b.safetensors
     category: image
-    tags: [tweet, image, current-box]
+    tags: [tweet, image, 8gb-vram]
     license: apache-2.0
     gated: false
     approx_bytes: 15988901735
@@ -472,7 +477,7 @@ models:
   - id: nemotron-speech-streaming-en
     hf_repo: nvidia/nemotron-speech-streaming-en-0.6b
     category: asr
-    tags: [tweet, asr, current-box]
+    tags: [tweet, asr, 8gb-vram]
     license: other
     gated: false
     approx_bytes: 5646634153
@@ -482,7 +487,7 @@ models:
   - id: whisper-large-v3-turbo
     hf_repo: openai/whisper-large-v3-turbo
     category: asr
-    tags: [tweet, asr, current-box]
+    tags: [tweet, asr, 8gb-vram]
     license: mit
     gated: false
     approx_bytes: 1622466054
@@ -492,7 +497,7 @@ models:
   - id: tencent-auk
     hf_repo: tencent/AuK
     category: tts
-    tags: [tweet, tts, current-box]
+    tags: [tweet, tts, 8gb-vram]
     license: mit
     gated: false
     approx_bytes: 6762657404
@@ -502,7 +507,7 @@ models:
   - id: voxtral-4b-tts
     hf_repo: mistralai/Voxtral-4B-TTS-2603
     category: tts
-    tags: [tweet, tts, current-box]
+    tags: [tweet, tts, 8gb-vram]
     license: cc-by-nc-4.0
     gated: false
     approx_bytes: 8037630658
@@ -512,7 +517,7 @@ models:
   - id: audio8-tts-preview
     hf_repo: Edge0/Audio8-TTS-Preview-0.6b
     category: tts
-    tags: [tweet, tts, current-box]
+    tags: [tweet, tts, 8gb-vram]
     license: apache-2.0
     gated: false
     approx_bytes: 2565537696
@@ -523,7 +528,7 @@ models:
   - id: yue2-3b
     hf_repo: m-a-p/YuE2-3B
     category: music
-    tags: [tweet, music, current-box]
+    tags: [tweet, music, 8gb-vram]
     license: cc-by-nc-4.0
     gated: false
     approx_bytes: 7295775046
@@ -535,7 +540,7 @@ models:
       - "*bf16*"
       - "*-f32.gguf"
     category: music
-    tags: [tweet, gguf, music, current-box]
+    tags: [tweet, gguf, music, 8gb-vram]
     license: cc-by-nc-4.0
     gated: false
     approx_bytes: 7401767256
@@ -547,7 +552,7 @@ models:
     exclude:
       - "*bf16*"
     category: music
-    tags: [tweet, gguf, music, current-box]
+    tags: [tweet, gguf, music, 8gb-vram]
     license: other
     gated: false
     approx_bytes: 29928924215
@@ -559,7 +564,7 @@ models:
   - id: stable-audio-3-medium
     hf_repo: stabilityai/stable-audio-3-medium
     category: music
-    tags: [tweet, music, gated, current-box]
+    tags: [tweet, music, gated, 8gb-vram]
     license: other
     gated: true
     approx_bytes: 10445316196
@@ -580,7 +585,7 @@ models:
   - id: unlimited-ocr
     hf_repo: baidu/Unlimited-OCR
     category: ocr
-    tags: [tweet, ocr, current-box]
+    tags: [tweet, ocr, 8gb-vram]
     license: mit
     gated: false
     approx_bytes: 6778369652
@@ -589,7 +594,7 @@ models:
   - id: glm-ocr
     hf_repo: zai-org/GLM-OCR
     category: ocr
-    tags: [tweet, ocr, current-box]
+    tags: [tweet, ocr, 8gb-vram]
     license: mit
     gated: false
     approx_bytes: 2657442283
@@ -598,7 +603,7 @@ models:
   - id: deepseek-ocr-2
     hf_repo: deepseek-ai/DeepSeek-OCR-2
     category: ocr
-    tags: [tweet, ocr, current-box]
+    tags: [tweet, ocr, 8gb-vram]
     license: apache-2.0
     gated: false
     approx_bytes: 6789306112
@@ -607,7 +612,7 @@ models:
   - id: chandra-ocr-2
     hf_repo: datalab-to/chandra-ocr-2
     category: ocr
-    tags: [tweet, ocr, current-box]
+    tags: [tweet, ocr, 8gb-vram]
     license: openrail
     gated: false
     approx_bytes: 10611946028
@@ -617,7 +622,7 @@ models:
   - id: jina-embeddings-v5-omni-small
     hf_repo: jinaai/jina-embeddings-v5-omni-small
     category: embeddings
-    tags: [tweet, embeddings, current-box]
+    tags: [tweet, embeddings, 8gb-vram]
     license: cc-by-nc-4.0
     gated: false
     approx_bytes: 3427219509
@@ -626,7 +631,7 @@ models:
   - id: qwen3-embedding-8b
     hf_repo: Qwen/Qwen3-Embedding-8B
     category: embeddings
-    tags: [tweet, embeddings, current-box]
+    tags: [tweet, embeddings, 8gb-vram]
     license: apache-2.0
     gated: false
     approx_bytes: 15150575778
@@ -635,7 +640,7 @@ models:
   - id: qwen3-embedding-0.6b
     hf_repo: Qwen/Qwen3-Embedding-0.6B
     category: embeddings
-    tags: [tweet, embeddings, current-box]
+    tags: [tweet, embeddings, 8gb-vram]
     license: apache-2.0
     gated: false
     approx_bytes: 1207489041
@@ -644,7 +649,7 @@ models:
   - id: embeddinggemma-300m
     hf_repo: google/embeddinggemma-300m
     category: embeddings
-    tags: [tweet, embeddings, gated, current-box]
+    tags: [tweet, embeddings, gated, 8gb-vram]
     license: gemma
     gated: true
     approx_bytes: 1269643611
@@ -654,7 +659,7 @@ models:
   - id: qwen3-reranker-8b
     hf_repo: Qwen/Qwen3-Reranker-8B
     category: embeddings
-    tags: [tweet, embeddings, current-box]
+    tags: [tweet, embeddings, 8gb-vram]
     license: apache-2.0
     gated: false
     approx_bytes: 16393071729
@@ -663,7 +668,7 @@ models:
   - id: bge-reranker-v2-m3
     hf_repo: BAAI/bge-reranker-v2-m3
     category: embeddings
-    tags: [tweet, embeddings, current-box]
+    tags: [tweet, embeddings, 8gb-vram]
     license: apache-2.0
     gated: false
     approx_bytes: 2293567489
@@ -671,7 +676,7 @@ models:
 
   # ------------------------------------------------- extra: small coding GGUF
   # Not on the tweet. Disabled by default; pulled in by the `domestic-coding`
-  # and `current-box` profiles, or with --enable <id>.
+  # and `8gb-vram` profiles, or with --enable <id>.
 
   - id: deepseek-r1-distill-qwen-14b-gguf
     hf_repo: unsloth/DeepSeek-R1-Distill-Qwen-14B-GGUF
@@ -679,7 +684,7 @@ models:
       - "*Q4_K_M.gguf"
       - README.md
     category: coding-small
-    tags: [coding-small, gguf, coding, current-box]
+    tags: [coding-small, gguf, coding, 8gb-vram]
     license: apache-2.0
     gated: false
     approx_bytes: 8988134723
@@ -705,7 +710,7 @@ models:
       - "*Q4_K_M.gguf"
       - README.md
     category: coding-small
-    tags: [coding-small, gguf, coding, current-box]
+    tags: [coding-small, gguf, coding, 8gb-vram]
     license: other
     gated: false
     approx_bytes: 10364425883
@@ -746,7 +751,7 @@ models:
       - "*-Q4_K_M.gguf"
       - README.md
     category: coding-small
-    tags: [coding-small, gguf, coding, current-box]
+    tags: [coding-small, gguf, coding, 8gb-vram]
     license: apache-2.0
     gated: false
     approx_bytes: 8988122579
@@ -761,13 +766,13 @@ models:
       - "*-q4_k_m.gguf"
       - README.md
     category: coding-small
-    tags: [coding-small, gguf, coding, current-box]
+    tags: [coding-small, gguf, coding, 8gb-vram]
     license: apache-2.0
     gated: false
     approx_bytes: 4683079206
     enabled: false
     notes: >-
-      ~4.7 GB — fits entirely in the current 8 GB RTX 2070 Super with room for
+      ~4.7 GB — fits entirely in an 8 GB card with room for
       context. Official Qwen repo.
 
   - id: deepseek-coder-6.7b-gguf
@@ -776,7 +781,7 @@ models:
       - "*Q4_K_M.gguf"
       - README.md
     category: coding-small
-    tags: [coding-small, gguf, coding, current-box]
+    tags: [coding-small, gguf, coding, 8gb-vram]
     license: other
     gated: false
     approx_bytes: 4083037226
@@ -784,4 +789,4 @@ models:
     notes: >-
       SUBSTITUTION: bartowski/deepseek-coder-6.7b-instruct-GGUF does not exist.
       TheBloke's is the highest-download GGUF of this model (~42k). ~4.1 GB at
-      Q4_K_M, the DeepSeek-family option that fits the current 8 GB card.
+      Q4_K_M, the DeepSeek-family option that fits an 8 GB card.

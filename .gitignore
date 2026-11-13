@@ -4,7 +4,7 @@ venv/
 __pycache__/
 *.py[cod]
 
-# run artefacts — logs and manifests are generated, never committed
+# run artefacts
 logs/
 manifests/
 *.log
