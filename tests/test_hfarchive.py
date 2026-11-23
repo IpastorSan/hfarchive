@@ -1929,7 +1929,7 @@ def test_macos_wheels_resolve_for_the_tagged_macos_release(tmp_path, wheels_env,
 
 def test_curated_selection_covers_macos_arm64():
     cat = hfa.load_catalog(CURATED)
-    assert "llama-b12359-bin-macos-arm64.tar.gz" in cat.runtime_by_id("llama.cpp").release_assets
+    assert "llama-b12649-bin-macos-arm64.tar.gz" in cat.runtime_by_id("llama.cpp").release_assets
     assert any("Darwin-macOS" in a and a.endswith("-arm64.zip")
                for a in cat.runtime_by_id("stable-diffusion.cpp").release_assets)
     for rid in ("ComfyUI", "ComfyUI-GGUF", "ComfyUI-GGUF-molbal"):

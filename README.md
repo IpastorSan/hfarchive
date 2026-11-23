@@ -92,7 +92,7 @@ $EDITOR models.yaml                         # trim it to what you want
 `--init` writes the default selection: a curated set of open models (LLMs,
 image and video models, security, uncensored and decision models) chosen for
 the 8, 16 and 24 GB VRAM tiers above, dated November 2026. Its `core` profile
-is about 880 GB; everything is about 2.2 TB. Trim it, select a smaller
+is about 895 GB; everything is about 2.3 TB. Trim it, select a smaller
 profile, or start from a small commented file with `--init --minimal`.
 
 Set the destination once instead of passing `--dest` every time:
