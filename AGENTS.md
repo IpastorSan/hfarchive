@@ -128,7 +128,7 @@ Pin `wheels` for every Python runtime (ComfyUI and its node packs, vLLM, transfo
 ./hfarchive --config examples/archive-YYYY-MM.yaml --profile all --list
 ```
 
-All repos must report OK. Report totals per profile and keep `core` to a size that fits one common drive with room for a second copy (the 2026-11 set: ~880 GB core, ~2.2 TB all). Then point `--init`'s curated-file constant at the new file.
+All repos must report OK. Report totals per profile and keep `core` to a size that fits one common drive with room for a second copy (the 2026-11 set: ~895 GB core, ~2.3 TB all). Then point `--init`'s curated-file constant at the new file.
 
 ### 7. Write the models guide
 

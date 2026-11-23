@@ -100,22 +100,25 @@ profiles:
 runtimes:
   - id: llama.cpp
     git: https://github.com/ggml-org/llama.cpp
-    ref: b12359
+    ref: b12649
     release_assets:
-      - "llama-b12359-bin-ubuntu-cuda-*-x64.tar.gz"
-      - "cudart-llama-b12359-bin-ubuntu-cuda-*-x64.tar.gz"
-      - "llama-b12359-bin-win-cuda-*-x64.zip"
+      - "llama-b12649-bin-ubuntu-cuda-*-x64.tar.gz"
+      - "cudart-llama-b12649-bin-ubuntu-cuda-*-x64.tar.gz"
+      - "llama-b12649-bin-win-cuda-*-x64.zip"
       - "cudart-llama-bin-win-cuda-*-x64.zip"
-      - "llama-b12359-bin-macos-arm64.tar.gz"
+      - "llama-b12649-bin-macos-arm64.tar.gz"
     tags: [core, extended, llm, tier-8gb, tier-16gb, tier-24gb]
     enabled: true
     notes: |
-      b12359 is the build of release v1.0.0 (2026-11-13): both point at commit
-      b1b770d90d94cad9e9ea5b993bdbc383a522fb28. The v1.0.0 release itself only
-      carries nightly-tag.txt, so the binaries come from b12359. CUDA 12.x
-      builds cover Turing (RTX 20) upwards. Binaries: llama-server, llama-cli;
-      --fit and --jinja are on by default in this build. macOS arm64 build:
-      Metal on Apple Silicon, same binaries and flags. The tier tags assume an
+      b12649 (2026-11-23) = commit 1f8baae28d096624bd47d33d2d179ec479d47720.
+      It is a pre-release build: the latest stable release, v1.0.0 (build
+      b12359, 2026-11-13), predates Inkling 2 support. b12649 includes every
+      Inkling 2 change: the model (#32217), Inkling 2 Mini's looped layers
+      (#32694) and their per-expert scale fix (#32704; builds without it load
+      Mini but produce wrong output). CUDA 12.x builds cover Turing (RTX 20)
+      upwards. Binaries: llama-server, llama-cli; --fit and --jinja are on by
+      default. macOS arm64 build: Metal on Apple Silicon, same binaries and
+      flags. The tier tags assume an
       NVIDIA card; on a Mac, GPU and RAM share one pool, so a model fits when
       its file plus context fits in about three quarters of unified memory
       (estimate), and --n-cpu-moe has nothing to offload to.
@@ -809,6 +812,154 @@ models:
         source: https://huggingface.co/Qwen/Qwen3.6-35B-A3B
         date: 2026-11-13
         note: "self-reported"
+
+  - id: inkling-2-mini-iq4nl
+    hf_repo: ggml-org/Inkling-2-Mini-GGUF
+    include:
+      - Inkling-2-Mini-IQ4_NL.gguf
+      - mmproj-Inkling-2-Mini-BF16.gguf
+      - README.md
+    category: llm
+    tags: [core, llm, tier-8gb, tier-16gb, tier-24gb]
+    license: apache-2.0
+    gated: false
+    approx_bytes: 18269748609
+    enabled: true
+    notes: |
+      Thinking Machines' 26.4B / 3.4B-active looped MoE with vision (the middle
+      12 of 24 layers run three times: about 5.4B effective active params per
+      token). ggml-org's official quant: NVFP4 experts of layers 0-19 at
+      IQ4_NL (imatrix), everything else at Q8_0. Chosen over unsloth's repo,
+      whose root files use Unsloth's own layout and whose mainline copies
+      (Mainline_Support/*.gguf_file) must be renamed by hand. The Hub lists no
+      licence for this repo; the base model is apache-2.0. Fits fully in VRAM
+      on 24 GB.
+    usage:
+      runtime: llama.cpp
+      notes: |
+        Settings (generation_config.json): temperature 1.0; no other sampler
+        values given. Reasoning depth via --chat-template-kwargs
+        '{"reasoning_effort":"high"}': none, minimal, low, medium, high
+        (default), xhigh, max, or a number 0.0-0.99; the card notes that the
+        minimum does not fully turn reasoning off. Context up to 1,048,576. The
+        card warns of long reasoning loops and of destructive actions in agent
+        use: cap output tokens and agent turns, and sandbox agents. Needs
+        llama.cpp b12649 or newer (#32704). Vision: --mmproj
+        mmproj-Inkling-2-Mini-BF16.gguf.
+        24 GB: all on GPU. 16 GB: --n-cpu-moe 6 (estimate). 8 GB: --n-cpu-moe 99
+        -c 32768 (estimate); ~17 GB RAM.
+    benchmarks:
+      - name: "SWE-bench Verified"
+        score: 79.2
+        source: https://huggingface.co/thinkingmachines/Inkling-2-Mini
+        date: 2026-11-23
+        note: "self-reported; bash only"
+      - name: "SWE-bench Pro v2 (Hard)"
+        score: 77.9
+        source: https://huggingface.co/thinkingmachines/Inkling-2-Mini
+        date: 2026-11-23
+        note: "self-reported; mini-swe-agent v2.4.6"
+      - name: "Terminal-Bench 2.1"
+        score: 71.6
+        source: https://huggingface.co/thinkingmachines/Inkling-2-Mini
+        date: 2026-11-23
+        note: "self-reported; pi v0.83.0"
+      - name: "DeepSWE 1.1"
+        score: 48.2
+        source: https://huggingface.co/thinkingmachines/Inkling-2-Mini
+        date: 2026-11-23
+        note: "self-reported; mini-swe-agent v2.4.6"
+      - name: "SWE-bench Multilingual"
+        score: 73.7
+        source: https://huggingface.co/thinkingmachines/Inkling-2-Mini
+        date: 2026-11-23
+        note: "self-reported; bash only"
+      - name: "Terminal-Bench 4.0"
+        score: 5.6
+        source: https://huggingface.co/thinkingmachines/Inkling-2-Mini
+        date: 2026-11-23
+        note: "self-reported; mini-swe-agent v2.4.6"
+      - name: "Humanity's Last Exam (Diamond)"
+        score: 15.2
+        source: https://huggingface.co/thinkingmachines/Inkling-2-Mini
+        date: 2026-11-23
+        note: "self-reported"
+      - name: "Artificial Analysis Intelligence Index v5.0"
+        score: 20.1
+        source: https://huggingface.co/thinkingmachines/Inkling-2-Mini
+        date: 2026-11-23
+        note: "as quoted on the model card"
+
+  - id: inkling-2-mini-q8
+    hf_repo: ggml-org/Inkling-2-Mini-GGUF
+    include:
+      - Inkling-2-Mini-Q8_0.gguf
+      - mmproj-Inkling-2-Mini-BF16.gguf
+      - README.md
+    category: llm
+    tags: [extended, llm, tier-24gb]
+    license: apache-2.0
+    gated: false
+    approx_bytes: 28461907105
+    enabled: true
+    notes: |
+      Near-lossless copy of Inkling 2 Mini (KL divergence 0.0030 against BF16,
+      ggml-org card), kept for a bigger card. 27.8 GB: on 24 GB some experts
+      stay in RAM; fits fully in VRAM on 32 GB.
+    usage:
+      runtime: llama.cpp
+      notes: |
+        Settings (generation_config.json): temperature 1.0; no other sampler
+        values given. Reasoning depth via --chat-template-kwargs
+        '{"reasoning_effort":"high"}': none, minimal, low, medium, high
+        (default), xhigh, max, or a number 0.0-0.99; the card notes that the
+        minimum does not fully turn reasoning off. Context up to 1,048,576. The
+        card warns of long reasoning loops and of destructive actions in agent
+        use: cap output tokens and agent turns, and sandbox agents. Needs
+        llama.cpp b12649 or newer (#32704). Vision: --mmproj
+        mmproj-Inkling-2-Mini-BF16.gguf.
+        24 GB: --n-cpu-moe 8 (estimate).
+    benchmarks:
+      - name: "SWE-bench Verified"
+        score: 79.2
+        source: https://huggingface.co/thinkingmachines/Inkling-2-Mini
+        date: 2026-11-23
+        note: "self-reported; bash only"
+      - name: "SWE-bench Pro v2 (Hard)"
+        score: 77.9
+        source: https://huggingface.co/thinkingmachines/Inkling-2-Mini
+        date: 2026-11-23
+        note: "self-reported; mini-swe-agent v2.4.6"
+      - name: "Terminal-Bench 2.1"
+        score: 71.6
+        source: https://huggingface.co/thinkingmachines/Inkling-2-Mini
+        date: 2026-11-23
+        note: "self-reported; pi v0.83.0"
+      - name: "DeepSWE 1.1"
+        score: 48.2
+        source: https://huggingface.co/thinkingmachines/Inkling-2-Mini
+        date: 2026-11-23
+        note: "self-reported; mini-swe-agent v2.4.6"
+      - name: "SWE-bench Multilingual"
+        score: 73.7
+        source: https://huggingface.co/thinkingmachines/Inkling-2-Mini
+        date: 2026-11-23
+        note: "self-reported; bash only"
+      - name: "Terminal-Bench 4.0"
+        score: 5.6
+        source: https://huggingface.co/thinkingmachines/Inkling-2-Mini
+        date: 2026-11-23
+        note: "self-reported; mini-swe-agent v2.4.6"
+      - name: "Humanity's Last Exam (Diamond)"
+        score: 15.2
+        source: https://huggingface.co/thinkingmachines/Inkling-2-Mini
+        date: 2026-11-23
+        note: "self-reported"
+      - name: "Artificial Analysis Intelligence Index v5.0"
+        score: 20.1
+        source: https://huggingface.co/thinkingmachines/Inkling-2-Mini
+        date: 2026-11-23
+        note: "as quoted on the model card"
 
   - id: nex-n2.5-mini-q4km
     hf_repo: abenzerps/Nex-N2.5-mini-GGUF
